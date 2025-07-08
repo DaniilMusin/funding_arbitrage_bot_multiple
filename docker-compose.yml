@@ -23,6 +23,7 @@ services:
     tty: true
     stdin_open: true
     network_mode: host
+    env_file: .env
     environment:
       HEALTH_PORT: 5723
     healthcheck:
