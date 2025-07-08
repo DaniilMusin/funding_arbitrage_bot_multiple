@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import core_ext.logging_conf  # noqa: F401  # isort: skip
 
 from core_ext import logging_conf
 logging_conf.setup()
