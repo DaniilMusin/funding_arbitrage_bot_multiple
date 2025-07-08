@@ -82,6 +82,7 @@ def main():
         "tabulate>=0.9.0",
         "ujson>=5.7.0",
         "urllib3>=1.26.15,<2.0",
+        "redis>=5.0.0",
         "web3",
         "xrpl-py>=4.1.0",
         "PyYaml>=0.2.5",
