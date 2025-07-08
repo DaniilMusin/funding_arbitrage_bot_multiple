@@ -1,0 +1,9 @@
+# Example Helm values for funding arbitrage bot
+replicaCount: 1
+
+pdb:
+  enabled: true
+  # At least one pod should remain available during disruptions
+  minAvailable: 1
+  # maxUnavailable can be used instead of minAvailable
+  # maxUnavailable: 0
