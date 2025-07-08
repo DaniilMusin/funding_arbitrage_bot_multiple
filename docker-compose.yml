@@ -1,10 +1,9 @@
 services:
-  hummingbot:
-    container_name: hummingbot
-    image: hummingbot/hummingbot:latest
-    build:  # Uncomment this and comment image if you want to build it locally
+  hb:
+    container_name: hb
+    build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile.extend
     volumes:
       - ./conf:/home/hummingbot/conf
       - ./conf/connectors:/home/hummingbot/conf/connectors
@@ -24,21 +23,32 @@ services:
     tty: true
     stdin_open: true
     network_mode: host
-#    environment:
-#      - CONFIG_PASSWORD=a
-#      - CONFIG_FILE_NAME=v2_with_controllers.py
-#      - SCRIPT_CONFIG=conf_v2_with_controllers.yml
+    environment:
+      HEALTH_PORT: 5723
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5723/livez || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  db:
-    image: mysql:8.0
+
+  postgres:
+    image: postgres:latest
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: hummingbot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
     volumes:
       - ./db:/docker-entrypoint-initdb.d
     ports:
-      - "3306:3306"
+      - "5432:5432"
+
+  redis:
+    image: redis:latest
+    restart: always
+    ports:
+      - "6379:6379"
 
   # gateway:
   #  restart: always
