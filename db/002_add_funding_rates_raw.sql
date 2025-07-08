@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS funding_rates_raw (
+    id SERIAL PRIMARY KEY,
+    exchange VARCHAR(50) NOT NULL,
+    symbol VARCHAR(50) NOT NULL,
+    rate DECIMAL(18,8) NOT NULL,
+    collected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+

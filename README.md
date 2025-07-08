@@ -95,6 +95,15 @@ Currently, the master branch of Hummingbot also includes the following exchange 
 | `vvs` | VVS | DEX | AMM | [Docs](https://hummingbot.org/exchanges/vvs/) | - |
 | `xsswap` | XSSwap | DEX | AMM | [Docs](https://hummingbot.org/exchanges/xswap/) | - |
 
+## Database Setup
+
+The Docker environment mounts the `db/` directory to the Postgres service. When the
+container initializes, every `.sql` file in this directory is executed automatically.
+The new migration script `002_add_funding_rates_raw.sql` creates the
+`funding_rates_raw` table. When starting a fresh container the migration runs
+automatically. If you have a persistent database volume, apply the script
+manually using `psql -f db/002_add_funding_rates_raw.sql`.
+
 ## Other Hummingbot Repos
 
 * [Deploy](https://github.com/hummingbot/deploy): Deploy Hummingbot in various configurations with Docker
