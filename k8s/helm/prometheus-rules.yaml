@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: funding-arbitrage-bot-rules
+  labels:
+    app: funding-arbitrage-bot
+spec:
+  groups:
+    - name: funding-arbitrage-bot
+      rules:
+        - alert: FundingArbitrageBotDown
+          expr: |
+            absent(up{job="funding-arbitrage-bot"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Funding arbitrage bot is not running
+            description: No running pods detected for more than 5 minutes.
+        - alert: FundingArbitrageWSLatencyHigh
+          expr: |
+            histogram_quantile(0.99, rate(funding_arbitrage_ws_latency_seconds_bucket[5m])) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: High websocket latency
+            description: 99th percentile websocket latency is above 500ms for 10 minutes.

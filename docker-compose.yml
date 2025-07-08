@@ -1,0 +1,66 @@
+services:
+  hb:
+    container_name: hb
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.extend
+    volumes:
+      - ./conf:/home/hummingbot/conf
+      - ./conf/connectors:/home/hummingbot/conf/connectors
+      - ./conf/strategies:/home/hummingbot/conf/strategies
+      - ./conf/controllers:/home/hummingbot/conf/controllers
+      - ./conf/scripts:/home/hummingbot/conf/scripts
+      - ./logs:/home/hummingbot/logs
+      - ./data:/home/hummingbot/data
+      - ./certs:/home/hummingbot/certs
+      - ./scripts:/home/hummingbot/scripts
+      - ./controllers:/home/hummingbot/controllers
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    tty: true
+    stdin_open: true
+    network_mode: host
+    environment:
+      HEALTH_PORT: 5723
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5723/livez || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+
+  postgres:
+    image: postgres:latest
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:latest
+    restart: always
+    ports:
+      - "6379:6379"
+
+  # gateway:
+  #  restart: always
+  #  container_name: gateway
+  #  image: hummingbot/gateway:latest
+  #  ports:
+  #    - "15888:15888"
+  #    - "8080:8080"
+  #  volumes:
+  #    - "./gateway_files/conf:/home/gateway/conf"
+  #    - "./gateway_files/logs:/home/gateway/logs"
+  #    - "./gateway_files/db:/home/gateway/db"
+  #    - "./certs:/home/gateway/certs"
+  #  environment:
+  #    - GATEWAY_PASSPHRASE=a

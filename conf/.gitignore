@@ -1,0 +1,4 @@
+*.yml
+!global_conf.yml
+*.json
+.password_verification
