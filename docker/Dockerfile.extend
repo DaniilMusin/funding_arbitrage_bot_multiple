@@ -10,4 +10,4 @@ COPY docker/health_server.py ./health_server.py
 
 CMD bash -c "python /home/hummingbot/health_server.py & /scripts/start.sh"
 
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD curl -f http://localhost:8080/livez || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD curl -f http://localhost:5723/livez || exit 1
