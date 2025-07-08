@@ -29,6 +29,17 @@ services:
 #      - CONFIG_FILE_NAME=v2_with_controllers.py
 #      - SCRIPT_CONFIG=conf_v2_with_controllers.yml
 
+  db:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: hummingbot
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d
+    ports:
+      - "3306:3306"
+
   # gateway:
   #  restart: always
   #  container_name: gateway
