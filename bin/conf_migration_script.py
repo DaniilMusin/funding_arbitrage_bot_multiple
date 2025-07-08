@@ -1,3 +1,4 @@
+import core_ext.logging_conf  # noqa: F401  # isort: skip
 import argparse
 
 import path_util  # noqa: F401
