@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 
+from core_ext import logging_conf
+logging_conf.setup()
+
 import asyncio
 from typing import Coroutine, List, Optional
 from weakref import ReferenceType, ref
