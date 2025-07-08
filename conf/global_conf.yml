@@ -1,2 +1,3 @@
 script_modules:
   - core_ext.state_sync
+config_path: funding_rate_arb.yml

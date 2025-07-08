@@ -1,4 +1,5 @@
 *.yml
 !global_conf.yml
+!funding_rate_arb.yml
 *.json
 .password_verification
