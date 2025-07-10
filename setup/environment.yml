@@ -56,5 +56,5 @@ dependencies:
   - urllib3>=1.26.15,<2.0
   - web3
   - xrpl-py==4.1.0
-  - yaml>=0.2.5
+  - pyyaml>=0.2.5
   - zlib>=1.2.13
