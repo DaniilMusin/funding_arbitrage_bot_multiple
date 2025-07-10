@@ -301,7 +301,7 @@ class PMM(ControllerBase):
         min_pct = self.config.min_base_pct
         max_pct = self.config.max_base_pct
         # Calculate skew factors (0 to 1) - how much to scale orders
-        if max_pct != min_pct:  # Prevent division by zero for both < and == cases
+        if max_pct > min_pct:  # Prevent division by zero and negative denominators
             # For buys: full size at min_pct, decreasing as we approach max_pct
             buy_skew = (max_pct - current_pct) / (max_pct - min_pct)
             # For sells: full size at max_pct, decreasing as we approach min_pct
