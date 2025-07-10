@@ -1838,11 +1838,16 @@ class XrplExchange(ExchangePyBase):
             # For issued currencies, amount2 is a dictionary with a 'value' field
             quote_amount = Decimal(amount2.get("value", "0"))
 
-        # Calculate price as quote/base
+        # Calculate price as quote/base with proper division by zero protection
         if base_amount == 0:
+            self.logger().warning(f"Base amount is zero for AMM pool {trading_pair}, cannot calculate price")
             return price, tx_timestamp
 
-        price = float(quote_amount / base_amount)
+        try:
+            price = float(quote_amount / base_amount)
+        except ZeroDivisionError:
+            self.logger().error(f"Division by zero error calculating AMM price for {trading_pair}")
+            return price, tx_timestamp
 
         self.logger().debug(f"AMM pool price for {trading_pair}: {price}")
         self.logger().debug(f"AMM pool transaction timestamp for {trading_pair}: {tx_timestamp}")

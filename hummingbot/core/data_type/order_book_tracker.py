@@ -148,12 +148,17 @@ class OrderBookTracker:
         fall-back mechanism for when the web socket update channel fails.
         '''
         await self._order_books_initialized.wait()
+        sleep_time = 1
+        max_sleep = 30
+        
         while True:
             try:
                 outdateds = [t_pair for t_pair, o_book in self._order_books.items()
                              if o_book.last_applied_trade < time.perf_counter() - (60. * 3)
                              and o_book.last_trade_price_rest_updated < time.perf_counter() - 5]
                 if outdateds:
+                    # Reset sleep time when we have work to do
+                    sleep_time = 1
                     args = {"trading_pairs": outdateds}
                     if self._domain is not None:
                         args["domain"] = self._domain
@@ -162,7 +167,9 @@ class OrderBookTracker:
                         self._order_books[trading_pair].last_trade_price = last_price
                         self._order_books[trading_pair].last_trade_price_rest_updated = time.perf_counter()
                 else:
-                    await asyncio.sleep(1)
+                    # Exponential backoff when no work is needed to reduce CPU usage
+                    await asyncio.sleep(sleep_time)
+                    sleep_time = min(sleep_time * 1.5, max_sleep)
             except asyncio.CancelledError:
                 raise
             except Exception:
