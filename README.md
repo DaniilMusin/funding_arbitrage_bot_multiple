@@ -104,6 +104,21 @@ The new migration script `002_add_funding_rates_raw.sql` creates the
 automatically. If you have a persistent database volume, apply the script
 manually using `psql -f db/002_add_funding_rates_raw.sql`.
 
+## Funding Rate Arbitrage Configuration
+
+The strategy parameters live in `conf/funding_rate_arb.yml`.
+The file contains these keys:
+
+| Key | Description |
+| --- | ----------- |
+| `min_funding_rate_profitability` | Minimum annualized funding rate difference required before entering a trade. Expressed as a decimal, so `0.0005` equals 0.05%. |
+| `position_size_quote` | Trade size per connector in quote currency. |
+| `leverage` | Leverage applied on derivative exchanges. Set `1` to trade without leverage. |
+| `connectors` | List of exchange connectors used by the bot. |
+| `tokens` | Symbols of the perpetual pairs to monitor and trade. |
+
+To use different exchanges or pairs, edit the lists under `connectors` and `tokens`. Adjust the `leverage` value to control the amount of margin used for each position.
+
 ## Other Hummingbot Repos
 
 * [Deploy](https://github.com/hummingbot/deploy): Deploy Hummingbot in various configurations with Docker
