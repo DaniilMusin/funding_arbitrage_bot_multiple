@@ -101,8 +101,22 @@ The Docker environment mounts the `db/` directory to the Postgres service. When 
 container initializes, every `.sql` file in this directory is executed automatically.
 The new migration script `002_add_funding_rates_raw.sql` creates the
 `funding_rates_raw` table. When starting a fresh container the migration runs
-automatically. If you have a persistent database volume, apply the script
-manually using `psql -f db/002_add_funding_rates_raw.sql`.
+automatically.
+
+If you are using a persistent Postgres volume, you need to apply new migrations
+manually. Connect to the Postgres container and run the migration script:
+
+```bash
+docker compose exec postgres psql -U postgres -d postgres -f db/002_add_funding_rates_raw.sql
+```
+
+Alternatively, if you have direct access to the database you can run
+
+```bash
+psql -f db/002_add_funding_rates_raw.sql
+```
+
+from the project root.
 
 ## Funding Rate Arbitrage Configuration
 
