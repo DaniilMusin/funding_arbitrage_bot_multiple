@@ -85,7 +85,7 @@ def main():
         "redis>=5.0.0",
         "web3",
         "xrpl-py>=4.1.0",
-        "PyYaml>=0.2.5",
+        "PyYAML>=0.2.5",
     ]
 
     cython_kwargs = {

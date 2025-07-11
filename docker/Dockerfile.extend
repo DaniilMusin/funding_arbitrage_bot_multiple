@@ -1,4 +1,4 @@
-FROM hummingbot/hummingbot:1.28-dev
+FROM hummingbot/hummingbot:latest
 
 RUN pip install --no-cache-dir flask asyncpg aioredis structlog
 
