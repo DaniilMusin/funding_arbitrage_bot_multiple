@@ -176,10 +176,10 @@ class InFlightOrderBase:
     async def wait_until_completely_filled(self):
         await self.completely_filled_event.wait()
 
-    def _creation_timestamp_from_order_id(self) -> int:
-        timestamp = -1
+    def _creation_timestamp_from_order_id(self) -> float:
+        timestamp = -1.0
         if len(self.client_order_id) > 16:
             nonce_component = self.client_order_id[-16:]
             timestamp_string = f"{nonce_component[:10]}.{nonce_component[-6:]}"
-            timestamp = float(timestamp_string) if nonce_component.isnumeric() else -1
+            timestamp = float(timestamp_string) if nonce_component.isnumeric() else -1.0
         return timestamp
