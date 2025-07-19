@@ -16,7 +16,10 @@ if is_posix:
         os.environ["CFLAGS"] = "-std=c++11"
 
 if os.environ.get("WITHOUT_CYTHON_OPTIMIZATIONS"):
-    os.environ["CFLAGS"] += " -O0"
+    if "CFLAGS" in os.environ:
+        os.environ["CFLAGS"] += " -O0"
+    else:
+        os.environ["CFLAGS"] = "-O0"
 
 
 def main():
