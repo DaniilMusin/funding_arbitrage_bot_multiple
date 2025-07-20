@@ -70,7 +70,9 @@ class FinalExchangeChecker:
                                         "message": f"Подключение к Bybit Perpetual успешно (через {url}). Время сервера: {data.get('result', {}).get('timeSecond', 'N/A')}",
                                         "server_time": data.get('result', {}).get('timeSecond', 'N/A')
                                     }
-                    except:
+                    except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, Exception) as e:
+                        # Log the specific error for debugging while continuing to try other endpoints
+                        print(f"    ⚠️  Failed to connect to {url} with headers {headers}: {type(e).__name__}: {str(e)}")
                         continue
             
             return {
@@ -138,7 +140,9 @@ class FinalExchangeChecker:
                                     "message": f"Подключение к Binance Spot успешно (через {url}). Время сервера: {data.get('serverTime', 'N/A')}",
                                     "server_time": data.get('serverTime', 'N/A')
                                 }
-                except:
+                except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, Exception) as e:
+                    # Log the specific error for debugging while continuing to try other endpoints
+                    print(f"    ⚠️  Failed to connect to Binance {url}: {type(e).__name__}: {str(e)}")
                     continue
             
             return {
@@ -275,7 +279,9 @@ class FinalExchangeChecker:
                                     "message": f"Подключение к HTX Spot успешно (через {url}). Статус: {data.get('status', 'OK')}",
                                     "server_time": "N/A"
                                 }
-                except:
+                except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, Exception) as e:
+                    # Log the specific error for debugging while continuing to try other endpoints
+                    print(f"    ⚠️  Failed to connect to HTX {url}: {type(e).__name__}: {str(e)}")
                     continue
             
             return {
@@ -310,7 +316,9 @@ class FinalExchangeChecker:
                                     "message": f"Подключение к MEXC Spot успешно (через {url}). Статус: {data.get('code', 'OK')}",
                                     "server_time": "N/A"
                                 }
-                except:
+                except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, Exception) as e:
+                    # Log the specific error for debugging while continuing to try other endpoints
+                    print(f"    ⚠️  Failed to connect to MEXC {url}: {type(e).__name__}: {str(e)}")
                     continue
             
             return {
