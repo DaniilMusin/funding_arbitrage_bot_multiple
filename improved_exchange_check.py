@@ -126,7 +126,9 @@ class ImprovedExchangeChecker:
                                     "message": f"Подключение к Binance Spot успешно (через {url}). Время сервера: {data.get('serverTime', 'N/A')}",
                                     "server_time": data.get('serverTime', 'N/A')
                                 }
-                except:
+                except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, Exception) as e:
+                    # Log the specific error for debugging while continuing to try other endpoints
+                    print(f"    ⚠️  Failed to connect to {url}: {type(e).__name__}: {str(e)}")
                     continue
             
             return {
