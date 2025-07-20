@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import os
 from typing import Dict
 
 import aiohttp
@@ -13,6 +14,8 @@ import aiohttp
 class FinalExchangeChecker:
     def __init__(self):
         self.session = None
+        # Proxy URL can be provided via environment variables
+        self.proxy = os.getenv("PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
 
     async def __aenter__(self):
         # Создаем сессию с правильными заголовками и без Brotli
@@ -25,11 +28,12 @@ class FinalExchangeChecker:
         }
 
         timeout = aiohttp.ClientTimeout(total=10)
-        connector = aiohttp.TCPConnector(ssl=False)  # Отключаем SSL проверку для тестирования
+        connector = aiohttp.TCPConnector(ssl=False)
         self.session = aiohttp.ClientSession(
             headers=headers,
             timeout=timeout,
-            connector=connector
+            connector=connector,
+            trust_env=True
         )
         return self
 
@@ -61,7 +65,7 @@ class FinalExchangeChecker:
             for url in urls:
                 for headers in headers_variants:
                     try:
-                        async with self.session.get(url, headers=headers) as response:
+                        async with self.session.get(url, headers=headers, proxy=self.proxy) as response:
                             if response.status == 200:
                                 data = await response.json()
                                 if data.get("retCode") == 0:
@@ -91,7 +95,7 @@ class FinalExchangeChecker:
         try:
             url = "https://api-futures.kucoin.com/api/v1/timestamp"
 
-            async with self.session.get(url) as response:
+            async with self.session.get(url, proxy=self.proxy) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get("code") == "200000":
@@ -131,7 +135,7 @@ class FinalExchangeChecker:
 
             for url in urls:
                 try:
-                    async with self.session.get(url) as response:
+                    async with self.session.get(url, proxy=self.proxy) as response:
                         if response.status == 200:
                             data = await response.json()
                             if "serverTime" in data:
@@ -161,7 +165,7 @@ class FinalExchangeChecker:
         try:
             url = "https://www.okx.com/api/v5/public/time"
 
-            async with self.session.get(url) as response:
+            async with self.session.get(url, proxy=self.proxy) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get("code") == "0":
@@ -200,7 +204,7 @@ class FinalExchangeChecker:
                 'Accept-Encoding': 'gzip, deflate',  # Убираем brotli
             }
 
-            async with self.session.get(url, headers=headers) as response:
+            async with self.session.get(url, headers=headers, proxy=self.proxy) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get("error") == []:
@@ -232,7 +236,7 @@ class FinalExchangeChecker:
         try:
             url = "https://api.gateio.ws/api/v4/spot/time"
 
-            async with self.session.get(url) as response:
+            async with self.session.get(url, proxy=self.proxy) as response:
                 if response.status == 200:
                     data = await response.json()
                     if "server_time" in data:
@@ -270,7 +274,7 @@ class FinalExchangeChecker:
 
             for url in urls:
                 try:
-                    async with self.session.get(url) as response:
+                    async with self.session.get(url, proxy=self.proxy) as response:
                         if response.status == 200:
                             data = await response.json()
                             if data.get("status") == "ok" or "data" in data:
@@ -307,7 +311,7 @@ class FinalExchangeChecker:
 
             for url in urls:
                 try:
-                    async with self.session.get(url) as response:
+                    async with self.session.get(url, proxy=self.proxy) as response:
                         if response.status == 200:
                             data = await response.json()
                             if data.get("code") == 200 or "data" in data:
