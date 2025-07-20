@@ -28,6 +28,10 @@
 # Базовая проверка (без API ключей)
 python3 final_exchange_check.py
 
+# При необходимости можно указать прокси-сервер:
+export PROXY="socks5://localhost:9050"
+python3 final_exchange_check.py
+
 # Полная проверка (с API ключами)
 python3 check_exchange_connections.py
 ```
