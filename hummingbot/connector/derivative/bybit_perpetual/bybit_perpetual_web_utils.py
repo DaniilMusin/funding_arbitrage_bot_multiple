@@ -11,11 +11,24 @@ from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RES
 from hummingbot.core.web_assistant.rest_pre_processors import RESTPreProcessorBase
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+DEFAULT_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "application/json",
+    "Referer": "https://www.bybit.com/",
+}
+
 
 class HeadersContentRESTPreProcessor(RESTPreProcessorBase):
     async def pre_process(self, request: RESTRequest) -> RESTRequest:
         request.headers = request.headers or {}
         request.headers["Content-Type"] = "application/json"
+        return request
+
+
+class DefaultHeadersRESTPreProcessor(RESTPreProcessorBase):
+    async def pre_process(self, request: RESTRequest) -> RESTRequest:
+        request.headers = {**DEFAULT_HEADERS, **(request.headers or {})}
         return request
 
 
@@ -33,6 +46,7 @@ def build_api_factory(
         auth=auth,
         rest_pre_processors=[
             TimeSynchronizerRESTPreProcessor(synchronizer=time_synchronizer, time_provider=time_provider),
+            DefaultHeadersRESTPreProcessor(),
             HeadersContentRESTPreProcessor(),
         ],
     )
@@ -87,7 +101,13 @@ def payload_from_message(message: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def build_api_factory_without_time_synchronizer_pre_processor(throttler: AsyncThrottler) -> WebAssistantsFactory:
-    api_factory = WebAssistantsFactory(throttler=throttler)
+    api_factory = WebAssistantsFactory(
+        throttler=throttler,
+        rest_pre_processors=[
+            DefaultHeadersRESTPreProcessor(),
+            HeadersContentRESTPreProcessor(),
+        ],
+    )
     return api_factory
 
 
