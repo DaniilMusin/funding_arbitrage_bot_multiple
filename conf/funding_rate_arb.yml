@@ -2,8 +2,10 @@ min_funding_rate_profitability: 0.0005
 position_size_quote: 100
 leverage: 5
 connectors:
+  - okx_perpetual
   - bybit_perpetual
-  - kucoin_perpetual
+  - bing_x
+  - hyperliquid_perpetual
 tokens:
   - BTC
   - ETH

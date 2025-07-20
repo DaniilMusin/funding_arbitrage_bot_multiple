@@ -32,9 +32,9 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt_on_new": True}
     )
     connectors: Set[str] = Field(
-        default="hyperliquid_perpetual,binance_perpetual",
+        default="okx_perpetual,bybit_perpetual,bing_x,hyperliquid_perpetual",
         json_schema_extra={
-            "prompt": lambda mi: "Enter the connectors separated by commas (e.g. hyperliquid_perpetual,binance_perpetual): ",
+            "prompt": lambda mi: "Enter the connectors separated by commas (e.g. okx_perpetual,bybit_perpetual,bing_x,hyperliquid_perpetual): ",
             "prompt_on_new": True}
     )
     tokens: Set[str] = Field(
@@ -78,11 +78,16 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
 class FundingRateArbitrage(StrategyV2Base):
     quote_markets_map = {
         "hyperliquid_perpetual": "USD",
-        "binance_perpetual": "USDT"
+        "binance_perpetual": "USDT",
+        "bybit_perpetual": "USDT",
+        "okx_perpetual": "USDT",
+        "bing_x": "USDT",
     }
     funding_payment_interval_map = {
         "binance_perpetual": 60 * 60 * 8,
-        "hyperliquid_perpetual": 60 * 60 * 1
+        "bybit_perpetual": 60 * 60 * 8,
+        "okx_perpetual": 60 * 60 * 8,
+        "hyperliquid_perpetual": 60 * 60 * 1,
     }
     funding_profitability_interval = 60 * 60 * 24
 
@@ -121,17 +126,34 @@ class FundingRateArbitrage(StrategyV2Base):
                 for trading_pair in self.market_data_provider.get_trading_pairs(connector_name):
                     connector.set_leverage(trading_pair, self.config.leverage)
 
-    def get_funding_info_by_token(self, token):
+    def get_connectors_in_use(self) -> Set[str]:
+        connectors = set()
+        for info in self.active_funding_arbitrages.values():
+            connectors.add(info["connector_1"])
+            connectors.add(info["connector_2"])
+        return connectors
+
+    def get_position_size_quote(self, connector_1: str, connector_2: str) -> Decimal:
+        quote_1 = self.quote_markets_map.get(connector_1, "USDT")
+        quote_2 = self.quote_markets_map.get(connector_2, "USDT")
+        balance_1 = self.connectors[connector_1].get_available_balance(quote_1)
+        balance_2 = self.connectors[connector_2].get_available_balance(quote_2)
+        return min(balance_1, balance_2)
+
+    def get_funding_info_by_token(self, token, connectors: Set[str] | None = None):
         """
         This method provides the funding rates across all the connectors
         """
         funding_rates = {}
-        for connector_name, connector in self.connectors.items():
+        connectors_to_use = connectors or set(self.connectors.keys())
+        for connector_name in connectors_to_use:
+            connector = self.connectors[connector_name]
             trading_pair = self.get_trading_pair_for_connector(token, connector_name)
             funding_rates[connector_name] = connector.get_funding_info(trading_pair)
         return funding_rates
 
-    def get_current_profitability_after_fees(self, token: str, connector_1: str, connector_2: str, side: TradeType):
+    def get_current_profitability_after_fees(
+            self, token: str, connector_1: str, connector_2: str, side: TradeType, quote_volume: Decimal):
         """
         This methods compares the profitability of buying at market in the two exchanges. If the side is TradeType.BUY
         means that the operation is long on connector 1 and short on connector 2.
@@ -142,13 +164,13 @@ class FundingRateArbitrage(StrategyV2Base):
         connector_1_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
             connector_name=connector_1,
             trading_pair=trading_pair_1,
-            quote_volume=self.config.position_size_quote,
+            quote_volume=quote_volume,
             is_buy=side == TradeType.BUY,
         ).result_price)
         connector_2_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
             connector_name=connector_2,
             trading_pair=trading_pair_2,
-            quote_volume=self.config.position_size_quote,
+            quote_volume=quote_volume,
             is_buy=side != TradeType.BUY,
         ).result_price)
         estimated_fees_connector_1 = self.connectors[connector_1].get_fee(
@@ -156,7 +178,7 @@ class FundingRateArbitrage(StrategyV2Base):
             quote_currency=trading_pair_1.split("-")[1],
             order_type=OrderType.MARKET,
             order_side=TradeType.BUY,
-            amount=self.config.position_size_quote / connector_1_price,
+            amount=quote_volume / connector_1_price,
             price=connector_1_price,
             is_maker=False,
             position_action=PositionAction.OPEN
@@ -166,7 +188,7 @@ class FundingRateArbitrage(StrategyV2Base):
             quote_currency=trading_pair_2.split("-")[1],
             order_type=OrderType.MARKET,
             order_side=TradeType.BUY,
-            amount=self.config.position_size_quote / connector_2_price,
+            amount=quote_volume / connector_2_price,
             price=connector_2_price,
             is_maker=False,
             position_action=PositionAction.OPEN
@@ -206,14 +228,24 @@ class FundingRateArbitrage(StrategyV2Base):
         and if one gets filled buy market the other one to improve the entry prices.
         """
         create_actions = []
+        connectors_in_use = self.get_connectors_in_use()
+        available_connectors = set(self.config.connectors) - connectors_in_use
+        if len(available_connectors) < 2:
+            return create_actions
+
         for token in self.config.tokens:
             if token not in self.active_funding_arbitrages:
-                funding_info_report = self.get_funding_info_by_token(token)
+                funding_info_report = self.get_funding_info_by_token(token, available_connectors)
+                if not funding_info_report or len(funding_info_report) < 2:
+                    continue
                 best_combination = self.get_most_profitable_combination(funding_info_report)
                 connector_1, connector_2, trade_side, expected_profitability = best_combination
                 if expected_profitability >= self.config.min_funding_rate_profitability:
+                    position_size_quote = self.get_position_size_quote(connector_1, connector_2)
+                    if position_size_quote <= 0:
+                        continue
                     current_profitability = self.get_current_profitability_after_fees(
-                        token, connector_1, connector_2, trade_side
+                        token, connector_1, connector_2, trade_side, position_size_quote
                     )
                     if self.config.trade_profitability_condition_to_enter:
                         if current_profitability < 0:
@@ -226,13 +258,15 @@ class FundingRateArbitrage(StrategyV2Base):
                                        f"Funding rate profitability: {expected_profitability}"
                                        f"Trading profitability after fees: {current_profitability}"
                                        f"Starting executors...")
-                    position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(token, connector_1, connector_2, trade_side)
+                    position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(
+                        token, connector_1, connector_2, trade_side, position_size_quote)
                     self.active_funding_arbitrages[token] = {
                         "connector_1": connector_1,
                         "connector_2": connector_2,
                         "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
                         "side": trade_side,
                         "funding_payments": [],
+                        "position_size_quote": position_size_quote,
                     }
                     return [CreateExecutorAction(executor_config=position_executor_config_1),
                             CreateExecutorAction(executor_config=position_executor_config_2)]
@@ -252,7 +286,8 @@ class FundingRateArbitrage(StrategyV2Base):
             )
             funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"])
             executors_pnl = sum(executor.net_pnl_quote for executor in executors)
-            take_profit_condition = executors_pnl + funding_payments_pnl > self.config.profitability_to_take_profit * self.config.position_size_quote
+            take_profit_condition = executors_pnl + funding_payments_pnl > (
+                self.config.profitability_to_take_profit * funding_arbitrage_info.get("position_size_quote", 0))
             funding_info_report = self.get_funding_info_by_token(token)
             if funding_arbitrage_info["side"] == TradeType.BUY:
                 funding_rate_diff = self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_2"]) - self.get_normalized_funding_rate_in_seconds(funding_info_report, funding_arbitrage_info["connector_1"])
@@ -278,13 +313,13 @@ class FundingRateArbitrage(StrategyV2Base):
         if token in self.active_funding_arbitrages:
             self.active_funding_arbitrages[token]["funding_payments"].append(funding_payment_completed_event)
 
-    def get_position_executors_config(self, token, connector_1, connector_2, trade_side):
+    def get_position_executors_config(self, token, connector_1, connector_2, trade_side, position_size_quote: Decimal):
         price = self.market_data_provider.get_price_by_type(
             connector_name=connector_1,
             trading_pair=self.get_trading_pair_for_connector(token, connector_1),
             price_type=PriceType.MidPrice
         )
-        position_amount = self.config.position_size_quote / price
+        position_amount = position_size_quote / price
 
         position_executor_config_1 = PositionExecutorConfig(
             timestamp=self.current_timestamp,
@@ -320,7 +355,8 @@ class FundingRateArbitrage(StrategyV2Base):
                 for connector_name, info in funding_info_report.items():
                     token_info[f"{connector_name} Rate (%)"] = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_name) * self.funding_profitability_interval * 100
                 connector_1, connector_2, side, funding_rate_diff = best_combination
-                profitability_after_fees = self.get_current_profitability_after_fees(token, connector_1, connector_2, side)
+                position_size_quote = self.get_position_size_quote(connector_1, connector_2)
+                profitability_after_fees = self.get_current_profitability_after_fees(token, connector_1, connector_2, side, position_size_quote)
                 best_paths_info["Best Path"] = f"{connector_1}_{connector_2}"
                 best_paths_info["Best Rate Diff (%)"] = funding_rate_diff * 100
                 best_paths_info["Trade Profitability (%)"] = profitability_after_fees * 100
