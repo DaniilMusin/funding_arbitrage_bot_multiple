@@ -16,7 +16,7 @@ class ConditionalExecutionState(ABC):
     _time_left: int = None
 
     def __eq__(self, other):
-        return type(self) == type(other)
+        return type(self) is type(other)
 
     @property
     def time_left(self):
@@ -68,17 +68,17 @@ class RunInTimeConditionalExecutionState(ConditionalExecutionState):
         self._end_timestamp: Union[datetime, time] = end_timestamp
 
     def __str__(self):
-        if type(self._start_timestamp) is datetime:
+        if isinstance(self._start_timestamp, datetime):
             if self._end_timestamp is not None:
                 return f"run between {self._start_timestamp} and {self._end_timestamp}"
             else:
                 return f"run from {self._start_timestamp}"
-        if type(self._start_timestamp) is time:
+        if isinstance(self._start_timestamp, time):
             if self._end_timestamp is not None:
                 return f"run daily between {self._start_timestamp} and {self._end_timestamp}"
 
     def __eq__(self, other):
-        return type(self) == type(other) and \
+        return type(self) is type(other) and \
             self._start_timestamp == other._start_timestamp and \
             self._end_timestamp == other._end_timestamp
 
