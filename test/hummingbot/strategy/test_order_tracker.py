@@ -29,7 +29,7 @@ class OrderTrackerUnitTests(unittest.TestCase):
         cls.trading_pair = "COINALPHA-HBOT"
 
         cls.limit_orders: List[LimitOrder] = [
-            LimitOrder(client_order_id=f"LIMIT//-{i}-{int(time.time()*1e6)}",
+            LimitOrder(client_order_id=f"LIMIT//-{i}-{int(time.time() * 1e6)}",
                        trading_pair=cls.trading_pair,
                        is_buy=True if i % 2 == 0 else False,
                        base_currency=cls.trading_pair.split("-")[0],
@@ -41,7 +41,7 @@ class OrderTrackerUnitTests(unittest.TestCase):
             for i in range(20)
         ]
         cls.market_orders: List[MarketOrder] = [
-            MarketOrder(order_id=f"MARKET//-{i}-{int(time.time()*1e3)}",
+            MarketOrder(order_id=f"MARKET//-{i}-{int(time.time() * 1e3)}",
                         trading_pair=cls.trading_pair,
                         is_buy=True if i % 2 == 0 else False,
                         base_asset=cls.trading_pair.split("-")[0],

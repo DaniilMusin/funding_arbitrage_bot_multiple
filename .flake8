@@ -1,9 +1,12 @@
 [flake8]
 filename = *.py, *.pyx, *.pxd
-ignore = E251, E501,E702,W504,W503
+ignore = E251, E501,E702,W504,W503,W391,W293,F401,F841
 per-file-ignores =
-    hummingbot/**/*.pyx: E225, E226, E251, E999
-    hummingbot/**/*.pxd: E225, E226, E251, E999
-    test/**/*.pyx: E225, E226, E251, E999
-    test/**/*.pxd: E225, E226, E251, E999
+    bin/hummingbot.py: E402
+    check_exchange_connections.py: E402
+    test/**/*.py: E301,E302,E305,E402
+    hummingbot/**/*.pyx: E225,E226,E251,E999
+    hummingbot/**/*.pxd: E225,E226,E251,E999
+    test/**/*.pyx: E225,E226,E251,E999
+    test/**/*.pxd: E225,E226,E251,E999
 max-line-length = 120

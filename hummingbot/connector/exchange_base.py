@@ -124,11 +124,11 @@ class ExchangeBase(ConnectorBase):
         return (self.get_price(trading_pair, True) + self.get_price(trading_pair, False)) / Decimal("2")
 
     def c_buy(self, trading_pair: str, amount, order_type=OrderType.MARKET,
-                   price=s_decimal_NaN, kwargs={}):
+              price=s_decimal_NaN, kwargs={}):
         return self.buy(trading_pair, amount, order_type, price, **kwargs)
 
     def c_sell(self, trading_pair: str, amount, order_type=OrderType.MARKET,
-                    price=s_decimal_NaN, kwargs={}):
+               price=s_decimal_NaN, kwargs={}):
         return self.sell(trading_pair, amount, order_type, price, **kwargs)
 
     def c_cancel(self, trading_pair: str, client_order_id: str):
@@ -138,13 +138,13 @@ class ExchangeBase(ConnectorBase):
         raise NotImplementedError
 
     def c_get_fee(self,
-                          base_currency: str,
-                          quote_currency: str,
-                          order_type,
-                          order_side,
-                          amount,
-                          price,
-                          is_maker = None):
+                  base_currency: str,
+                  quote_currency: str,
+                  order_type,
+                  order_side,
+                  amount,
+                  price,
+                  is_maker=None):
         return self.get_fee(base_currency, quote_currency, order_type, order_side, amount, price, is_maker)
 
     def c_get_order_book(self, trading_pair: str):

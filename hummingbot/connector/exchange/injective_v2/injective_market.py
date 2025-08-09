@@ -33,7 +33,7 @@ class InjectiveToken:
         return chain_value * scaler
 
     def value_from_special_chain_format(self, chain_value: Decimal) -> Decimal:
-        scaler = Decimal(f"1e{-self.decimals-18}")
+        scaler = Decimal(f"1e{-self.decimals - 18}")
         return chain_value * scaler
 
 
@@ -51,7 +51,7 @@ class InjectiveSpotMarket:
         return self.base_token.value_from_chain_format(chain_value=chain_quantity)
 
     def price_from_chain_format(self, chain_price: Decimal) -> Decimal:
-        scaler = Decimal(f"1e{self.base_token.decimals-self.quote_token.decimals}")
+        scaler = Decimal(f"1e{self.base_token.decimals - self.quote_token.decimals}")
         return chain_price * scaler
 
     def quantity_from_special_chain_format(self, chain_quantity: Decimal) -> Decimal:

@@ -1,33 +1,47 @@
+import logging
 import sys
 import types
-import logging
 import unittest
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+from scripts.risk_hooks import RiskWrappedFundingArb
+
+
 # Create lightweight stubs for heavy hummingbot modules before importing the strategy
 hb_app_module = types.ModuleType("hummingbot.client.hummingbot_application")
+
 
 class DummyHBApp:
     def stop(self):
         pass
 
+
 _dummy_app = DummyHBApp()
+
+
 class HBAppCls:
     @classmethod
     def main_application(cls):
         return _dummy_app
 
+
 hb_app_module.HummingbotApplication = HBAppCls
 sys.modules['hummingbot.client.hummingbot_application'] = hb_app_module
 
 connector_module = types.ModuleType("hummingbot.connector.connector_base")
+
+
 class ConnectorBase:
     pass
+
+
 connector_module.ConnectorBase = ConnectorBase
 sys.modules['hummingbot.connector.connector_base'] = connector_module
 
 v2_module = types.ModuleType("scripts.v2_funding_rate_arb")
+
+
 class DummyBase:
     def __init__(self, connectors, config):
         self.connectors = connectors
@@ -35,28 +49,33 @@ class DummyBase:
         self.controllers = {}
         self.controller_reports = {}
         self._current_timestamp = 0
+
     @property
     def current_timestamp(self):
         return self._current_timestamp
+
     def _set_current_timestamp(self, ts):
         self._current_timestamp = ts
+
     def get_performance_report(self, controller_id):
         return self.controller_reports.get(controller_id, {}).get("performance")
+
     def on_tick(self):
         pass
+
     def logger(self):
         logger = logging.getLogger("dummy")
         logger.setLevel(1)
         return logger
 
+
 class DummyConfig:
     pass
+
 
 v2_module.FundingRateArbitrage = DummyBase
 v2_module.FundingRateArbitrageConfig = DummyConfig
 sys.modules['scripts.v2_funding_rate_arb'] = v2_module
-
-from scripts.risk_hooks import RiskWrappedFundingArb
 
 
 class PerformanceReport:
