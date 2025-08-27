@@ -1,0 +1,17 @@
+# Funding Arbitrage Bot Requirements
+# These are additional dependencies beyond what Hummingbot provides
+
+# Structured logging
+structlog>=23.0.0
+
+# PostgreSQL adapter for state sync
+asyncpg>=0.28.0
+
+# Redis for rate limiting
+redis>=5.0.0
+
+# Development dependencies (optional)
+pytest>=7.0.0
+black>=22.0.0
+isort>=5.10.0
+flake8>=5.0.0

@@ -96,3 +96,14 @@ coverage.xml
 .env
 
 **/.claude/settings.local.json
+
+# Modular architecture specific
+# Symbolic link to hummingbot (created by install script)
+hummingbot
+
+# Local installation files  
+*.egg-info/
+.installed.cfg
+
+# Keep the submodule reference in git but ignore any manual downloads
+# Note: hummingbot-upstream/ is tracked as a git submodule
