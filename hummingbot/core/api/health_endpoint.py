@@ -10,6 +10,7 @@ from aiohttp import web, hdrs
 from aiohttp.web import Request, Response
 
 from hummingbot.logger import HummingbotLogger
+from hummingbot.core.observability.metrics import get_metrics_collector
 
 
 class HealthEndpoint:
@@ -66,6 +67,7 @@ class HealthEndpoint:
         self.app.router.add_get('/health/ready', self.readiness_handler)
         self.app.router.add_get('/health/status', self.status_handler)
         self.app.router.add_get('/health/detailed', self.detailed_status_handler)
+        self.app.router.add_get('/metrics', self.metrics_handler)
         
         # CORS headers for all routes
         self.app.middlewares.append(self._cors_middleware)
@@ -254,6 +256,30 @@ class HealthEndpoint:
             self.logger().error(f"Error in detailed status check: {e}")
             return web.json_response(
                 {"status": "error", "message": str(e)}, 
+                status=500
+            )
+    
+    async def metrics_handler(self, request: Request) -> Response:
+        """
+        Prometheus metrics endpoint.
+        
+        Returns metrics in Prometheus text format for scraping.
+        """
+        try:
+            metrics_collector = get_metrics_collector()
+            metrics_data = metrics_collector.generate_metrics()
+            
+            return web.Response(
+                body=metrics_data,
+                content_type=metrics_collector.get_content_type(),
+                status=200
+            )
+            
+        except Exception as e:
+            self.logger().error(f"Error generating metrics: {e}")
+            return web.Response(
+                text=f"# Error generating metrics: {e}",
+                content_type="text/plain",
                 status=500
             )
     
