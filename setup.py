@@ -89,6 +89,8 @@ def main():
         "web3",
         "xrpl-py>=4.1.0",
         "PyYAML>=0.2.5",
+        "prometheus-client>=0.19.0",
+        "sentry-sdk>=1.40.0",
     ]
 
     cython_kwargs = {
