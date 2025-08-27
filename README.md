@@ -6,6 +6,31 @@
 [![Twitter](https://img.shields.io/twitter/url?url=https://twitter.com/_hummingbot?style=social&label=_hummingbot)](https://twitter.com/_hummingbot)
 [![Discord](https://img.shields.io/discord/530578568154054663?logo=discord&logoColor=white&style=flat-square)](https://discord.gg/hummingbot)
 
+## 🏗️ Modular Architecture
+
+This project uses a **modular architecture** that decouples custom code from the upstream Hummingbot codebase, making updates and maintenance much easier:
+
+```
+funding-arbitrage-bot/
+├── hummingbot-upstream/     # Git submodule → upstream Hummingbot
+├── strategies/              # Custom trading strategies
+│   └── funding_arbitrage/   # Funding rate arbitrage strategy
+├── adapters/                # Core extensions and customizations
+│   └── core_ext/           # Logging, state sync, throttling
+├── services/                # Additional services and controllers
+│   └── controllers/        # Custom trading controllers
+├── scripts/                 # Utility and standalone scripts
+└── conf/                   # Configuration files
+```
+
+### Benefits of This Architecture
+
+- ✅ **Easy Updates**: Upstream Hummingbot is a git submodule, updates are simple
+- ✅ **Clean Separation**: Custom code is isolated from vendor code
+- ✅ **Modular Design**: Each component has a clear responsibility
+- ✅ **Plugin System**: Strategies work as plugins to the core system
+- ✅ **No Merge Conflicts**: Your customizations never conflict with upstream changes
+
 ## Strategy Overview
 
 This is a **funding rate arbitrage bot** built on top of [Hummingbot](https://github.com/hummingbot/hummingbot) that automatically captures funding rate differences between perpetual and spot markets. The bot identifies profitable funding rate spreads and executes market-neutral hedged positions to earn the funding payments.
@@ -40,18 +65,26 @@ The positions are sized to maintain market neutrality, capturing funding payment
 
 ### 1. Environment Setup
 
-Clone the repository and copy the environment template:
+Clone the repository and set up the modular architecture:
 
 ```bash
 git clone <repository-url>
-cd funding_arbitrage_bot_multiple
-cp .env.example .env
+cd funding-arbitrage-bot
+
+# Set up the modular architecture with Hummingbot submodule
+./install.sh
 ```
 
 ### 2. Configure API Keys
 
-Edit `.env` with your exchange API credentials:
+Create and edit `.env` with your exchange API credentials:
 
+```bash
+cp .env.example .env
+# Edit .env file with your API keys
+```
+
+Example `.env`:
 ```bash
 # Bybit Perpetual
 BYBIT_PERPETUAL_API_KEY=your_api_key
@@ -61,12 +94,14 @@ BYBIT_PERPETUAL_SECRET_KEY=your_secret_key
 BINANCE_API_KEY=your_api_key
 BINANCE_SECRET_KEY=your_secret_key
 
-# Add other exchanges as needed...
+# Optional: Enable state synchronization
+ENABLE_STATE_SYNC=true
+STATE_SYNC_DSN=postgresql://localhost/postgres
 ```
 
 ### 3. Configure Strategy Parameters
 
-Edit `conf/funding_rate_arb.yml`:
+The installation script creates `conf/funding_rate_arb.yml` with default settings:
 
 ```yaml
 min_funding_rate_profitability: 0.0005  # 0.05% minimum spread
@@ -83,11 +118,14 @@ tokens:
 ### 4. Start the Bot
 
 ```bash
-# Using Docker Compose
-docker-compose up -d
-
-# Or directly
+# Start with the new modular architecture
 ./start
+
+# Or run a specific strategy file
+./start -f v2_funding_rate_arb.py
+
+# Using Docker Compose (if preferred)
+docker-compose up -d
 ```
 
 ### 5. Monitor and Verify
@@ -101,6 +139,19 @@ docker-compose up -d
 
 # Check health status
 curl http://localhost:5723/health/readiness
+```
+
+### 6. Updating Hummingbot
+
+To update to the latest Hummingbot version:
+
+```bash
+# Update the upstream submodule
+./update_upstream.sh
+
+# Commit the update
+git add hummingbot-upstream
+git commit -m "Update Hummingbot to latest version"
 ```
 
 ## Health Monitoring
@@ -136,6 +187,64 @@ The bot provides comprehensive health monitoring endpoints:
 - Maintain adequate margin buffers on all exchanges
 - Regularly review and adjust risk parameters
 - Use separate sub-accounts for risk isolation
+
+## Architecture Deep Dive
+
+### Directory Structure
+
+```
+funding-arbitrage-bot/
+├── hummingbot-upstream/              # Git submodule to upstream Hummingbot
+│   ├── hummingbot/                   # Core Hummingbot package
+│   ├── bin/                          # Hummingbot executables
+│   └── ...                          # Other upstream files
+├── strategies/                       # Custom trading strategies (plugins)
+│   └── funding_arbitrage/            
+│       ├── __init__.py               # Plugin exports
+│       └── v2_funding_rate_arb.py    # Main funding arbitrage strategy
+├── adapters/                         # Core functionality extensions
+│   └── core_ext/                     
+│       ├── __init__.py               # Adapter exports  
+│       ├── logging_conf.py           # Structured logging setup
+│       ├── state_sync.py             # PostgreSQL state synchronization
+│       └── throttle.py               # Redis-based rate limiting
+├── services/                         # Additional services and controllers
+│   └── controllers/                  # Custom trading controllers
+│       ├── directional_trading/      # Directional strategies
+│       ├── market_making/            # Market making controllers
+│       └── generic/                  # Generic controllers
+├── scripts/                          # Standalone scripts and utilities
+├── conf/                            # Configuration files
+├── install.sh                       # Setup script for submodule architecture
+├── update_upstream.sh               # Script to update Hummingbot upstream
+└── start                           # Modified startup script
+```
+
+### Benefits of the Modular Architecture
+
+1. **Upstream Isolation**: The entire Hummingbot codebase is contained in `hummingbot-upstream/` as a git submodule
+2. **Clean Updates**: Update Hummingbot by running `./update_upstream.sh` - no merge conflicts
+3. **Plugin System**: Custom strategies in `strategies/` work as plugins
+4. **Adapter Pattern**: Core extensions in `adapters/` modify behavior without patching upstream
+5. **Service Separation**: Additional services in `services/` are clearly separated from core logic
+
+### Update Process
+
+When a new Hummingbot version is released:
+
+```bash
+# Update to latest upstream version
+./update_upstream.sh
+
+# Test that everything still works
+./start
+
+# Commit the submodule update
+git add hummingbot-upstream
+git commit -m "Update Hummingbot to v1.x.x"
+```
+
+This process ensures your customizations remain intact while staying current with upstream improvements.
 
 ## Configuration
 

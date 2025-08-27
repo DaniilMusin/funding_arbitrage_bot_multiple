@@ -27,20 +27,29 @@ while getopts ":p:f:c:" opt; do
   esac
 done
 
-# Check if bin/hummingbot_quickstart.py exists
-if [[ ! -f bin/hummingbot_quickstart.py ]]; then
-    echo "Error: bin/hummingbot_quickstart.py command not found. Make sure you are in the Hummingbot root directory"
+# Check if hummingbot submodule is initialized
+if [ ! -d "hummingbot-upstream/hummingbot" ]; then
+    echo "❌ Error: Hummingbot submodule not initialized!"
+    echo "   Please run './install.sh' first to set up the project"
     exit 1
 fi
 
-# Check if the hummingbot conda environment is activated
-if [[ $CONDA_DEFAULT_ENV != "hummingbot" ]]; then
-    echo "Error: 'hummingbot' conda environment is not activated. Please activate it and try again."
+# Create symbolic link if it doesn't exist
+if [ ! -L "hummingbot" ]; then
+    ln -s hummingbot-upstream/hummingbot hummingbot
+fi
+
+# Check if bin/hummingbot_quickstart.py exists in the submodule
+if [[ ! -f hummingbot-upstream/bin/hummingbot_quickstart.py ]]; then
+    echo "Error: bin/hummingbot_quickstart.py command not found in Hummingbot submodule"
     exit 1
 fi
 
-# Build the command to run
-CMD="./bin/hummingbot_quickstart.py"
+# Set the Python path to include all necessary directories
+export PYTHONPATH=".:./hummingbot-upstream:./strategies:./adapters:./services:${PYTHONPATH}"
+
+# Build the command to run - use the submodule's quickstart script
+CMD="./hummingbot-upstream/bin/hummingbot_quickstart.py"
 if [[ ! -z "$PASSWORD" ]]; then
     CMD="$CMD -p \"$PASSWORD\""
 fi
@@ -48,7 +57,14 @@ fi
 # Check for valid file extensions
 if [[ ! -z "$FILENAME" ]]; then
     if [[ $FILENAME == *.yml || $FILENAME == *.py ]]; then
-        CMD="$CMD -f \"$FILENAME\""
+        # If it's a strategy file, look in our strategies directory first
+        if [[ $FILENAME == *.py ]] && [[ -f "strategies/funding_arbitrage/$FILENAME" ]]; then
+            CMD="$CMD -f \"strategies/funding_arbitrage/$FILENAME\""
+        elif [[ -f "scripts/$FILENAME" ]]; then
+            CMD="$CMD -f \"scripts/$FILENAME\""
+        else
+            CMD="$CMD -f \"$FILENAME\""
+        fi
     else
         echo "Error: Invalid strategy or script file. File must be a .yml or .py file."
         exit 4
@@ -63,6 +79,9 @@ if [[ ! -z "$CONFIG" ]]; then
         exit 3
     fi
 fi
+
+echo "🚀 Starting Funding Arbitrage Bot with modular architecture..."
+echo "📦 Using Hummingbot from: ./hummingbot-upstream/"
 
 # Execute the command
 eval $CMD

@@ -1,0 +1,1 @@
+"""Adapters package for extending Hummingbot core functionality."""

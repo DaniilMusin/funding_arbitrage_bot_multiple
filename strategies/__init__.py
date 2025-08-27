@@ -1,0 +1,1 @@
+"""Custom strategies package for the funding arbitrage bot."""
