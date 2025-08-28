@@ -111,6 +111,12 @@ The bot provides comprehensive health monitoring endpoints:
 - **`/health/readiness`**: Trading readiness (connections, margin, positions)
 - **`/metrics`**: Detailed performance metrics
 
+### Trading Safety Gate
+
+- A strict guard blocks new orders until readiness is green: connectors healthy, margin OK, time sync OK, circuit breakers not tripped, and rate-limits available.
+- Guard is enforced in `ScriptStrategyBase.buy/sell` and `ExecutorBase.place_order` and returns an error when blocked. Block reasons are logged and exported to metrics `hummingbot_trading_blocks_total{reason,...}`.
+- Metrics also expose computed edge (`hummingbot_edge_value`) and time-to-next funding per exchange (`hummingbot_funding_time_to_next_seconds`).
+
 ## Limitations and Risks
 
 ### ⚠️ Risk Factors
