@@ -405,3 +405,87 @@ docker-compose --env-file .env.secrets up
 - Periodic security reviews and dependency scanning
 
 This comprehensive secrets management strategy ensures secure handling of sensitive information across all deployment environments while maintaining operational efficiency and compliance requirements.
+
+## Docker Secrets Usage for This Repo's Compose Layout
+
+This section describes how Docker secrets are used in the Hummingbot Docker Compose setup for this repository.
+
+### Prerequisites
+
+- Docker Swarm or Docker Compose with Docker secrets enabled.
+- A secret management system (e.g., HashiCorp Vault, AWS Secrets Manager, etc.) for external secrets.
+- A `.env.secrets` file for development environment variables.
+
+### Directory Structure
+
+```
+secrets/
+├── trading/
+│   ├── binance_api_key
+│   ├── binance_secret_key
+│   ├── coinbase_api_key
+│   └── coinbase_secret_key
+├── database/
+│   ├── postgres_password
+│   └── postgres_user
+└── monitoring/
+    ├── telegram_token
+    └── slack_webhook_url
+```
+
+### Docker Compose Configuration
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  hummingbot:
+    image: hummingbot/hummingbot:latest
+    secrets:
+      - binance_api_key
+      - binance_secret_key
+      - postgres_password
+    environment:
+      - BINANCE_API_KEY_FILE=/run/secrets/binance_api_key
+      - BINANCE_SECRET_KEY_FILE=/run/secrets/binance_secret_key
+      - POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password
+
+secrets:
+  binance_api_key:
+    external: true
+  binance_secret_key:
+    external: true
+  postgres_password:
+    external: true
+```
+
+### Loading Environment Variables
+
+```bash
+# Load from file
+source .env.secrets
+
+# Export for Docker Compose
+export $(cat .env.secrets | xargs)
+
+# Use with Docker Compose
+docker-compose --env-file .env.secrets up
+```
+
+### Secrets Directory Structure
+
+```
+secrets/
+├── trading/
+│   ├── binance_api_key
+│   ├── binance_secret_key
+│   ├── coinbase_api_key
+│   └── coinbase_secret_key
+├── database/
+│   ├── postgres_password
+│   └── postgres_user
+└── monitoring/
+    ├── telegram_token
+    └── slack_webhook_url
+```

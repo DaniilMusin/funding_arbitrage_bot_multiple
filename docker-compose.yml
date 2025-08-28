@@ -20,6 +20,9 @@ x-common-hb: &common-hb
   tty: true
   stdin_open: true
   restart: unless-stopped
+  secrets:
+    - exchange_api_keys
+    - exchange_api_secrets
 
 services:
   # Local development environment
@@ -36,6 +39,9 @@ services:
     env_file: 
       - .env
       - .env.local
+    secrets:
+      - exchange_api_keys
+      - exchange_api_secrets
     environment:
       HEALTH_PORT: 5723
       LOG_LEVEL: DEBUG
@@ -76,6 +82,9 @@ services:
     env_file:
       - .env
       - .env.paper
+    secrets:
+      - exchange_api_keys
+      - exchange_api_secrets
     environment:
       HEALTH_PORT: 5723
       LOG_LEVEL: INFO
@@ -123,6 +132,9 @@ services:
     env_file:
       - .env
       - .env.prod
+    secrets:
+      - exchange_api_keys
+      - exchange_api_secrets
     environment:
       HEALTH_PORT: 5723
       LOG_LEVEL: WARN
@@ -434,3 +446,8 @@ volumes:
   redis_paper_data:
   redis_prod_data:
   prometheus_data:
+secrets:
+  exchange_api_keys:
+    file: ./secrets/exchange_api_keys.json
+  exchange_api_secrets:
+    file: ./secrets/exchange_api_secrets.json

@@ -24,7 +24,7 @@ from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 from hummingbot.strategy_v2.runnable_base import RunnableBase
-from hummingbot.core.reliability import get_reliability_manager
+from hummingbot.core.reliability import get_reliability_manager, require_trading_readiness
 from hummingbot.core.observability.metrics import get_metrics_collector
 
 
@@ -267,6 +267,7 @@ class ExecutorBase(RunnableBase):
         """
         return self.connectors[exchange].budget_checker.adjust_candidates(order_candidates)
 
+    @require_trading_readiness
     def place_order(self,
                     connector_name: str,
                     trading_pair: str,

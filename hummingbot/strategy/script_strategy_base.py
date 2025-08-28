@@ -13,7 +13,7 @@ from hummingbot.core.event.events import OrderType, PositionAction
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 from hummingbot.strategy.strategy_py_base import StrategyPyBase
-from hummingbot.core.reliability import get_reliability_manager
+from hummingbot.core.reliability import get_reliability_manager, require_trading_readiness
 from hummingbot.core.observability.metrics import get_metrics_collector
 
 lsb_logger = None
@@ -86,6 +86,7 @@ class ScriptStrategyBase(StrategyPyBase):
     async def on_stop(self):
         pass
 
+    @require_trading_readiness
     def buy(self,
             connector_name: str,
             trading_pair: str,
@@ -122,6 +123,7 @@ class ScriptStrategyBase(StrategyPyBase):
         self.logger().debug(f"Creating {trading_pair} buy order: price: {price} amount: {amount}.")
         return self.buy_with_specific_market(market_pair, amount, order_type, price, position_action=position_action)
 
+    @require_trading_readiness
     def sell(self,
              connector_name: str,
              trading_pair: str,
