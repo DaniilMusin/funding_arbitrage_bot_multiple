@@ -261,6 +261,12 @@ def readiness():
         return jsonify(error_result), 503
 
 
+@app.route('/health/ready')
+def ready():
+    """Alias for readiness endpoint for compatibility with compose/docs."""
+    return readiness()
+
+
 @app.route('/livez')
 def livez():
     """Legacy liveness endpoint for backward compatibility."""
