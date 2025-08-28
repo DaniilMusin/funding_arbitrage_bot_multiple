@@ -44,11 +44,21 @@ services:
       TELEMETRY_ENABLED: "false"
       PROMETHEUS_ENABLED: "false"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5723/livez || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:5723/health/readiness || exit 1"]
       interval: 60s
       timeout: 15s
       retries: 5
       start_period: 30s
+    depends_on:
+      postgres-local:
+        condition: service_healthy
+      redis-local:
+        condition: service_healthy
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 32768
+        hard: 65536
 
   # Paper trading environment
   hb-paper:
@@ -75,17 +85,27 @@ services:
       PROMETHEUS_ENABLED: "true"
       PROMETHEUS_PORT: 9090
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5723/livez || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:5723/health/readiness || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 45s
+    depends_on:
+      postgres-paper:
+        condition: service_healthy
+      redis-paper:
+        condition: service_healthy
     # Security settings for paper environment
     security_opt:
       - no-new-privileges:true
     read_only: false
     tmpfs:
       - /tmp:noexec,nosuid,size=256m
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 32768
+        hard: 65536
 
   # Production environment
   hb-prod:
@@ -115,11 +135,16 @@ services:
       PYTHONOPTIMIZE: 2
       PYTHONDONTWRITEBYTECODE: 1
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5723/livez || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:5723/health/readiness || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
+    depends_on:
+      postgres-prod:
+        condition: service_healthy
+      redis-prod:
+        condition: service_healthy
     # Enhanced security for production
     security_opt:
       - no-new-privileges:true
@@ -145,7 +170,7 @@ services:
 
   # PostgreSQL for local development
   postgres-local:
-    image: postgres:latest
+    image: postgres:15.4-alpine
     container_name: postgres-local
     profiles: ["local"]
     restart: unless-stopped
@@ -153,6 +178,7 @@ services:
       POSTGRES_USER: hummingbot
       POSTGRES_PASSWORD: dev_password
       POSTGRES_DB: hummingbot_local
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     volumes:
       - ./db:/docker-entrypoint-initdb.d
       - postgres_local_data:/var/lib/postgresql/data
@@ -163,10 +189,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432 -U hummingbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
 
   # PostgreSQL for paper trading
   postgres-paper:
-    image: postgres:latest
+    image: postgres:15.4-alpine
     container_name: postgres-paper
     profiles: ["paper"]
     restart: unless-stopped
@@ -183,12 +217,18 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432 -U ${POSTGRES_USER:-hummingbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     security_opt:
       - no-new-privileges:true
 
   # PostgreSQL for production
   postgres-prod:
-    image: postgres:latest
+    image: postgres:15.4-alpine
     container_name: postgres-prod
     profiles: ["prod"]
     restart: unless-stopped
@@ -205,6 +245,12 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432 -U ${POSTGRES_USER:-hummingbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     security_opt:
       - no-new-privileges:true
     deploy:
@@ -218,7 +264,7 @@ services:
 
   # Redis for local development
   redis-local:
-    image: redis:latest
+    image: redis:7.2-alpine
     container_name: redis-local
     profiles: ["local"]
     restart: unless-stopped
@@ -229,10 +275,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
 
   # Redis for paper trading
   redis-paper:
-    image: redis:latest
+    image: redis:7.2-alpine
     container_name: redis-paper
     profiles: ["paper"]
     restart: unless-stopped
@@ -246,12 +300,18 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_paper_pass}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     security_opt:
       - no-new-privileges:true
 
   # Redis for production
   redis-prod:
-    image: redis:latest
+    image: redis:7.2-alpine
     container_name: redis-prod
     profiles: ["prod"]
     restart: unless-stopped
@@ -265,6 +325,12 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     security_opt:
       - no-new-privileges:true
     deploy:
