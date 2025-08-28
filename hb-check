@@ -517,8 +517,10 @@ def cli():
 @cli.command()
 @click.option('--exchange', '-e', help='Check specific exchange (optional)')
 @click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
 @click.option('--timeout', '-t', default=10, help='Connection timeout in seconds')
-def connections(exchange: Optional[str], json_output: bool, timeout: int):
+def connections(exchange: Optional[str], json_output: bool, format: Optional[str], output_dir: str, timeout: int):
     """Check exchange connections and basic connectivity."""
     
     async def run_checks():
@@ -540,8 +542,9 @@ def connections(exchange: Optional[str], json_output: bool, timeout: int):
             return results
     
     results = asyncio.run(run_checks())
-    
-    if json_output:
+
+    # Handle on-screen output
+    if json_output and not format:
         click.echo(json.dumps(results, indent=2))
     else:
         click.echo(ColorOutput.header("🔗 Exchange Connection Status"))
@@ -564,12 +567,49 @@ def connections(exchange: Optional[str], json_output: bool, timeout: int):
         click.echo()
         click.echo(f"Summary: {success_count}/{len(results)} exchanges connected successfully")
 
+    # Handle artifact output
+    if format:
+        # Create dated directory
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        target_dir = os.path.join(output_dir, today)
+        os.makedirs(target_dir, exist_ok=True)
+
+        timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+        if format == 'json':
+            artifact_path = os.path.join(target_dir, f'hb-check-connections-{timestamp}.json')
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2)
+        elif format == 'md':
+            artifact_path = os.path.join(target_dir, f'hb-check-connections-{timestamp}.md')
+            lines = []
+            lines.append('# Отчет о подключениях к биржам')
+            lines.append('')
+            success = [r for r in results if r.get('status') == 'success']
+            failure = [r for r in results if r.get('status') != 'success']
+            lines.append('## ✅ Успех')
+            for r in success:
+                latency = r.get('latency_ms')
+                latency_str = f" ({latency}ms)" if latency is not None else ''
+                lines.append(f"- {r.get('exchange', 'unknown')}: OK{latency_str}")
+            lines.append('')
+            lines.append('## ❌ Ошибки')
+            for r in failure:
+                lines.append(f"- {r.get('exchange', 'unknown')}: {r.get('message', 'error')}")
+            lines.append('')
+            lines.append(f"Итог: {len(success)}/{len(results)} подключений успешны")
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+
+        click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
+
 
 @cli.command()
 @click.option('--exchange', '-e', help='Check specific exchange (optional)')
 @click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
 @click.option('--threshold', '-t', default=1000, help='Latency threshold in ms')
-def latency(exchange: Optional[str], json_output: bool, threshold: int):
+def latency(exchange: Optional[str], json_output: bool, format: Optional[str], output_dir: str, threshold: int):
     """Check latency to exchanges."""
     
     async def run_latency_checks():
@@ -592,7 +632,7 @@ def latency(exchange: Optional[str], json_output: bool, threshold: int):
     
     results = asyncio.run(run_latency_checks())
     
-    if json_output:
+    if json_output and not format:
         click.echo(json.dumps(results, indent=2))
     else:
         click.echo(ColorOutput.header("⚡ Exchange Latency Report"))
@@ -615,11 +655,38 @@ def latency(exchange: Optional[str], json_output: bool, threshold: int):
         avg_latency = sum(r.get('latency_ms', 0) for r in results if r.get('latency_ms')) / len([r for r in results if r.get('latency_ms')])
         click.echo(f"Average latency: {avg_latency:.1f}ms")
 
+    # Save artifact if requested
+    if format:
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        target_dir = os.path.join(output_dir, today)
+        os.makedirs(target_dir, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+        if format == 'json':
+            artifact_path = os.path.join(target_dir, f'hb-check-latency-{timestamp}.json')
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2)
+        else:
+            artifact_path = os.path.join(target_dir, f'hb-check-latency-{timestamp}.md')
+            lines = ['# Latency Report', '']
+            for r in results:
+                ex = r.get('exchange', 'unknown')
+                lat = r.get('latency_ms')
+                status = r.get('status')
+                if status == 'success' and lat is not None:
+                    lines.append(f'- {ex}: {lat}ms')
+                else:
+                    lines.append(f'- {ex}: error')
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+        click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
+
 
 @cli.command()
 @click.option('--pair', '-p', default='BTC-USDT', help='Trading pair to check')
 @click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
-def funding(pair: str, json_output: bool):
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
+def funding(pair: str, json_output: bool, format: Optional[str], output_dir: str):
     """Check funding rates across exchanges."""
     
     async def get_funding_data():
@@ -628,7 +695,7 @@ def funding(pair: str, json_output: bool):
     
     results = asyncio.run(get_funding_data())
     
-    if json_output:
+    if json_output and not format:
         click.echo(json.dumps(results, indent=2))
     else:
         click.echo(ColorOutput.header(f"💰 Funding Rates for {pair}"))
@@ -673,11 +740,42 @@ def funding(pair: str, json_output: bool):
             for rate_data in failed_rates:
                 click.echo(ColorOutput.error(f"{rate_data['exchange']}: {rate_data.get('message', 'Unknown error')}"))
 
+    # Save artifact if requested
+    if format:
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        target_dir = os.path.join(output_dir, today)
+        os.makedirs(target_dir, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+        if format == 'json':
+            artifact_path = os.path.join(target_dir, f'hb-check-funding-{pair}-{timestamp}.json')
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2)
+        else:
+            artifact_path = os.path.join(target_dir, f'hb-check-funding-{pair}-{timestamp}.md')
+            lines = []
+            lines.append(f'# Funding Rates for {pair}')
+            lines.append('')
+            ok = [r for r in results if r.get('status') == 'success']
+            err = [r for r in results if r.get('status') == 'error']
+            for r in sorted(ok, key=lambda x: x.get('funding_rate', 0), reverse=True):
+                rate = r.get('funding_rate', 0) * 100
+                lines.append(f"- {r['exchange']}: {rate:.4f}%")
+            if err:
+                lines.append('')
+                lines.append('## Errors')
+                for r in err:
+                    lines.append(f"- {r['exchange']}: {r.get('message', 'error')}")
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+        click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
+
 
 @cli.command()
 @click.option('--exchange', '-e', help='Check specific exchange (optional)')
 @click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
-def permissions(exchange: Optional[str], json_output: bool):
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
+def permissions(exchange: Optional[str], json_output: bool, format: Optional[str], output_dir: str):
     """Check API permissions for configured exchanges."""
     
     # This would require authenticated API calls, which need API keys
@@ -690,7 +788,7 @@ def permissions(exchange: Optional[str], json_output: bool):
         configured_exchanges = config.get_configured_exchanges()
         missing_creds = config.validate_exchange_connectivity()
         
-        if json_output:
+        if json_output and not format:
             result = {
                 'configured_exchanges': configured_exchanges,
                 'missing_credentials': missing_creds
@@ -725,9 +823,38 @@ def permissions(exchange: Optional[str], json_output: bool):
                     for cred in missing:
                         env_var = f"{ex.upper()}_{cred.upper()}"
                         click.echo(f"  {env_var}")
+        # Save artifact if requested
+        if format:
+            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            target_dir = os.path.join(output_dir, today)
+            os.makedirs(target_dir, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+            data = {
+                'configured_exchanges': configured_exchanges,
+                'missing_credentials': missing_creds
+            }
+            if format == 'json':
+                artifact_path = os.path.join(target_dir, f'hb-check-permissions-{timestamp}.json')
+                with open(artifact_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2)
+            else:
+                artifact_path = os.path.join(target_dir, f'hb-check-permissions-{timestamp}.md')
+                lines = []
+                lines.append('# Конфигурация API ключей')
+                lines.append('')
+                lines.append('## Настроены')
+                for ex in sorted(configured_exchanges):
+                    lines.append(f'- {ex}')
+                lines.append('')
+                lines.append('## Отсутствуют')
+                for ex, creds in missing_creds.items():
+                    lines.append(f'- {ex}: {", ".join(creds)}')
+                with open(artifact_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(lines))
+            click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
     
     except Exception as e:
-        if json_output:
+        if json_output and not format:
             click.echo(json.dumps({'error': str(e)}, indent=2))
         else:
             click.echo(ColorOutput.error(f"Could not check permissions: {e}"))
@@ -736,7 +863,9 @@ def permissions(exchange: Optional[str], json_output: bool):
 
 @cli.command()
 @click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
-def health(json_output: bool):
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
+def health(json_output: bool, format: Optional[str], output_dir: str):
     """Check overall system health and readiness."""
     
     async def run_health_checks():
@@ -775,7 +904,7 @@ def health(json_output: bool):
             'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
-        if json_output:
+        if json_output and not format:
             click.echo(json.dumps(health_status, indent=2))
         else:
             click.echo(ColorOutput.header("🏥 System Health Check"))
@@ -797,8 +926,28 @@ def health(json_output: bool):
                 click.echo(ColorOutput.error("❌ System is not ready for trading"))
                 click.echo(ColorOutput.info("Run 'hb-check connections' and 'hb-check funding' for detailed diagnostics"))
     
+        # Save artifact if requested
+        if format:
+            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            target_dir = os.path.join(output_dir, today)
+            os.makedirs(target_dir, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+            if format == 'json':
+                artifact_path = os.path.join(target_dir, f'hb-check-health-{timestamp}.json')
+                with open(artifact_path, 'w', encoding='utf-8') as f:
+                    json.dump(health_status, f, indent=2)
+            else:
+                artifact_path = os.path.join(target_dir, f'hb-check-health-{timestamp}.md')
+                lines = ['# System Health Check', '']
+                lines.append(f"Overall: {health_status['overall_status']}")
+                lines.append('')
+                lines.append(f"Connections: {health_status['connections']['successful']}/{health_status['connections']['total']}")
+                lines.append(f"Funding: {health_status['funding_rates']['successful']}/{health_status['funding_rates']['total']}")
+                with open(artifact_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(lines))
+            click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
     except Exception as e:
-        if json_output:
+        if json_output and not format:
             click.echo(json.dumps({'error': str(e), 'overall_status': 'error'}, indent=2))
         else:
             click.echo(ColorOutput.error(f"Health check failed: {e}"))

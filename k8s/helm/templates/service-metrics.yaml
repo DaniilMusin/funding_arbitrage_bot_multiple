@@ -1,0 +1,19 @@
+{{- if .Values.hummingbot.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hummingbot.fullname" . }}-metrics
+  labels:
+    app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: metrics
+      port: {{ .Values.hummingbot.metrics.port }}
+      targetPort: {{ .Values.hummingbot.metrics.port }}
+      protocol: TCP
+{{- end }}

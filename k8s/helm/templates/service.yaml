@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hummingbot.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: {{ .Values.hummingbot.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: health
+      port: {{ .Values.hummingbot.service.port }}
+      targetPort: {{ .Values.hummingbot.service.targetPort }}
+      protocol: TCP
+    {{- if .Values.hummingbot.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.hummingbot.metrics.port }}
+      targetPort: {{ .Values.hummingbot.metrics.port }}
+      protocol: TCP
+    {{- end }}

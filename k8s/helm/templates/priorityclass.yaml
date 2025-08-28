@@ -1,0 +1,9 @@
+{{- if .Values.hummingbot.priorityClass.enabled }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.hummingbot.priorityClass.name }}
+value: {{ .Values.hummingbot.priorityClass.value }}
+globalDefault: {{ .Values.hummingbot.priorityClass.globalDefault | default false }}
+description: {{ .Values.hummingbot.priorityClass.description | quote }}
+{{- end }}

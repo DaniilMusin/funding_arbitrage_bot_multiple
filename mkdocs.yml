@@ -1,0 +1,13 @@
+site_name: Hummingbot Ops Docs
+nav:
+  - Запуск: index.md
+  - Риски: risks.md
+  - Диагностика: diagnostics.md
+  - Runbooks: runbooks.md
+theme:
+  name: material
+markdown_extensions:
+  - admonition
+  - codehilite
+  - toc:
+      permalink: true

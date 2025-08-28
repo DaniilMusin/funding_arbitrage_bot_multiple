@@ -216,3 +216,25 @@ Licensed under [Apache 2.0](./LICENSE). This project is not affiliated with the 
 - [Exchange Setup Guide](./SETUP_INSTRUCTIONS.md)
 - [Troubleshooting Guide](./README_EXCHANGE_CHECK.md)
 - [Hummingbot Discord](https://discord.gg/hummingbot)
+
+## Documentation (MkDocs)
+
+Local preview:
+
+```bash
+pip install mkdocs mkdocs-material
+mkdocs serve
+```
+
+Docs live under `docs/` with sections: Запуск, Риски, Диагностика, Runbooks.
+
+## hb-check Reports
+
+Now supports saving artifacts:
+
+```bash
+./hb-check connections --format=md --output-dir=./reports
+./hb-check connections --format=json --output-dir=./reports
+```
+
+Artifacts are stored under `reports/YYYY-MM-DD/`.

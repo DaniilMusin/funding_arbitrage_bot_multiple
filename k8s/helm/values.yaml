@@ -45,7 +45,7 @@ hummingbot:
     enabled: true
     livenessProbe:
       httpGet:
-        path: /livez
+        path: /health/liveness
         port: 5723
       initialDelaySeconds: 30
       periodSeconds: 30
@@ -53,12 +53,31 @@ hummingbot:
       failureThreshold: 3
     readinessProbe:
       httpGet:
-        path: /readyz
+        path: /health/readiness
         port: 5723
       initialDelaySeconds: 15
       periodSeconds: 10
       timeoutSeconds: 5
       failureThreshold: 3
+
+  # Metrics
+  metrics:
+    enabled: true
+    port: 9090
+
+  # Scheduling
+  podAntiAffinity:
+    enabled: true
+  topologySpreadConstraints:
+    enabled: true
+
+  # PriorityClass
+  priorityClassName: ""
+  priorityClass:
+    enabled: false
+    name: hummingbot-critical
+    value: 1000000000
+    description: Priority class for critical Hummingbot pods
   
   # Environment variables (non-sensitive)
   env:
@@ -222,7 +241,7 @@ monitoring:
       enabled: true
       interval: 30s
       path: /metrics
-      port: health
+      port: metrics
   
   # Grafana dashboards
   grafana:

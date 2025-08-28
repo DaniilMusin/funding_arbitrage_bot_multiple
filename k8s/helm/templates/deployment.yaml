@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hummingbot.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.hummingbot.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      {{- if .Values.hummingbot.priorityClassName }}
+      priorityClassName: {{ .Values.hummingbot.priorityClassName }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: {{ .Values.global.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.global.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.global.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.global.securityContext.fsGroup }}
+      {{- if .Values.hummingbot.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - {{ include "hummingbot.name" . }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- if .Values.hummingbot.topologySpreadConstraints.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+      {{- end }}
+      containers:
+        - name: hummingbot
+          image: "{{ .Values.global.image.repository }}:{{ .Values.global.image.tag }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          env:
+            {{- range $k, $v := .Values.hummingbot.env }}
+            - name: {{ $k }}
+              value: "{{ $v }}"
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.hummingbot.service.targetPort }}
+              protocol: TCP
+            {{- if .Values.hummingbot.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.hummingbot.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health/liveness
+              port: {{ .Values.hummingbot.service.targetPort }}
+            initialDelaySeconds: {{ .Values.hummingbot.healthcheck.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.hummingbot.healthcheck.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.hummingbot.healthcheck.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.hummingbot.healthcheck.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: {{ .Values.hummingbot.service.targetPort }}
+            initialDelaySeconds: {{ .Values.hummingbot.healthcheck.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.hummingbot.healthcheck.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.hummingbot.healthcheck.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.hummingbot.healthcheck.readinessProbe.failureThreshold }}
+          resources:
+            {{- toYaml .Values.hummingbot.resources | nindent 12 }}
+          volumeMounts:
+            {{- range $name, $cfg := .Values.secrets }}
+            {{- if $cfg.secretName }}
+            - name: secrets-{{ $name }}
+              mountPath: {{ $cfg.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      volumes:
+        {{- range $name, $cfg := .Values.secrets }}
+        {{- if $cfg.secretName }}
+        - name: secrets-{{ $name }}
+          secret:
+            secretName: {{ $cfg.secretName }}
+        {{- end }}
+        {{- end }}
