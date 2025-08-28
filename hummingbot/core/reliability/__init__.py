@@ -156,6 +156,19 @@ class ExchangeConnector:
 
 from .reliability_manager import ReliabilityManager, ReliabilityConfig
 
+# Singleton accessor for global reliability manager used by guards
+_global_reliability_manager: ReliabilityManager = None
+
+def get_reliability_manager() -> ReliabilityManager:
+    global _global_reliability_manager
+    if _global_reliability_manager is None:
+        _global_reliability_manager = ReliabilityManager(ReliabilityConfig())
+    return _global_reliability_manager
+
+def set_reliability_manager(instance: ReliabilityManager):
+    global _global_reliability_manager
+    _global_reliability_manager = instance
+
 __all__ = [
     "ReliabilityManager",
     "ReliabilityConfig"

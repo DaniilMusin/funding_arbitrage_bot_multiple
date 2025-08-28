@@ -13,6 +13,8 @@ from hummingbot.core.event.events import OrderType, PositionAction
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 from hummingbot.strategy.strategy_py_base import StrategyPyBase
+from hummingbot.core.reliability import get_reliability_manager
+from hummingbot.core.observability.metrics import get_metrics_collector
 
 lsb_logger = None
 s_decimal_nan = Decimal("NaN")
@@ -103,6 +105,19 @@ class ScriptStrategyBase(StrategyPyBase):
 
         :return: The client assigned id for the new order
         """
+        # Guard: readiness and circuit breakers
+        rm = get_reliability_manager()
+        can, reason = rm.can_trade()
+        if not can:
+            get_metrics_collector().record_trading_block(
+                reason=reason, exchange=connector_name, trading_pair=trading_pair)
+            self.logger().warning(f"Trade blocked: {reason} for {connector_name} {trading_pair}")
+            raise RuntimeError(f"Trading blocked: {reason}")
+        if not rm.can_pass_rate_limit(connector_name, tokens_needed=1):
+            get_metrics_collector().record_trading_block(
+                reason="rate_limit", exchange=connector_name, trading_pair=trading_pair)
+            self.logger().warning(f"Trade blocked: rate_limit for {connector_name} {trading_pair}")
+            raise RuntimeError("Trading blocked: rate_limit")
         market_pair = self._market_trading_pair_tuple(connector_name, trading_pair)
         self.logger().debug(f"Creating {trading_pair} buy order: price: {price} amount: {amount}.")
         return self.buy_with_specific_market(market_pair, amount, order_type, price, position_action=position_action)
@@ -126,6 +141,19 @@ class ScriptStrategyBase(StrategyPyBase):
 
         :return: The client assigned id for the new order
         """
+        # Guard: readiness and circuit breakers
+        rm = get_reliability_manager()
+        can, reason = rm.can_trade()
+        if not can:
+            get_metrics_collector().record_trading_block(
+                reason=reason, exchange=connector_name, trading_pair=trading_pair)
+            self.logger().warning(f"Trade blocked: {reason} for {connector_name} {trading_pair}")
+            raise RuntimeError(f"Trading blocked: {reason}")
+        if not rm.can_pass_rate_limit(connector_name, tokens_needed=1):
+            get_metrics_collector().record_trading_block(
+                reason="rate_limit", exchange=connector_name, trading_pair=trading_pair)
+            self.logger().warning(f"Trade blocked: rate_limit for {connector_name} {trading_pair}")
+            raise RuntimeError("Trading blocked: rate_limit")
         market_pair = self._market_trading_pair_tuple(connector_name, trading_pair)
         self.logger().debug(f"Creating {trading_pair} sell order: price: {price} amount: {amount}.")
         return self.sell_with_specific_market(market_pair, amount, order_type, price, position_action=position_action)

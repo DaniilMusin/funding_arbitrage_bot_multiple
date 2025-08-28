@@ -400,6 +400,21 @@ class TradingReadinessChecker:
                 return False
         
         return True
+
+    def can_trade(self) -> (bool, str):
+        """Return if trading allowed and reason when blocked."""
+        if not self.health_checks:
+            return False, "no_health_checks"
+        latest_checks = {}
+        for check in reversed(self.health_checks):
+            if check.name not in latest_checks:
+                latest_checks[check.name] = check
+        for system in ["connections", "margins"]:
+            if system not in latest_checks:
+                return False, f"missing_{system}"
+            if latest_checks[system].status == HealthStatus.CRITICAL:
+                return False, f"{system}_critical"
+        return True, "ok"
     
     async def _update_readiness_state(self):
         """Update readiness state and trigger callbacks."""

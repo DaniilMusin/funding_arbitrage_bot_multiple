@@ -339,6 +339,25 @@ class ReliabilityManager:
         ]
         
         return all(checks)
+
+    def can_trade(self) -> (bool, str):
+        """Return readiness boolean with reason string for blocks."""
+        if not self.is_time_sync_ok():
+            return False, "time_drift"
+        if self.circuit_breaker_manager and not self.circuit_breaker_manager.can_trade():
+            return False, "circuit_breaker"
+        if self.trading_readiness_checker:
+            ready, reason = self.trading_readiness_checker.can_trade()
+            if not ready:
+                return False, reason
+        return True, "ok"
+
+    def can_pass_rate_limit(self, exchange: str, tokens_needed: int = 1) -> bool:
+        """Non-blocking check if enough rate-limit tokens are immediately available."""
+        if not self.rate_limiter:
+            return True
+        status = self.rate_limiter.get_bucket_status(exchange)
+        return status.get("tokens_available", 0) >= tokens_needed
     
     # Event callbacks
     def add_trading_halted_callback(self, callback: Callable):

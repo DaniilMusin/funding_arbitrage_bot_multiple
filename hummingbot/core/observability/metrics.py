@@ -131,6 +131,14 @@ class MetricsCollector:
             buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0)
         )
         
+        # Trade guard blocks
+        self.trading_blocks = Counter(
+            'hummingbot_trading_blocks_total',
+            'Total number of trade blocks by guard',
+            ['reason', 'exchange', 'trading_pair'],
+            registry=self.registry
+        )
+        
         # Trading readiness SLA
         self.trading_readiness = Gauge(
             'hummingbot_trading_readiness',
@@ -143,6 +151,26 @@ class MetricsCollector:
             'hummingbot_readiness_uptime_seconds_total',
             'Total uptime in ready state',
             ['component'],
+            registry=self.registry
+        )
+        
+        # Edge metrics
+        self.edge_value = Gauge(
+            'hummingbot_edge_value',
+            'Computed trading edge (fraction)',
+            ['exchange', 'trading_pair'],
+            registry=self.registry
+        )
+        self.edge_component = Gauge(
+            'hummingbot_edge_component',
+            'Edge components by type',
+            ['exchange', 'trading_pair', 'component'],
+            registry=self.registry
+        )
+        self.funding_time_to_next = Gauge(
+            'hummingbot_funding_time_to_next_seconds',
+            'Seconds until next funding event',
+            ['exchange'],
             registry=self.registry
         )
         
@@ -260,6 +288,11 @@ class MetricsCollector:
             reason=reason
         ).inc()
     
+    # Trade guard blocks
+    def record_trading_block(self, reason: str, exchange: str = 'unknown', trading_pair: str = 'unknown'):
+        """Record a trade block event by guard."""
+        self.trading_blocks.labels(reason=reason, exchange=exchange, trading_pair=trading_pair).inc()
+    
     # Trading readiness SLA
     def set_trading_readiness(self, component: str, is_ready: bool):
         """Set trading readiness status."""
@@ -286,6 +319,19 @@ class MetricsCollector:
     def set_unrealized_pnl(self, exchange: str, trading_pair: str, pnl_usd: float):
         """Set unrealized PnL."""
         self.pnl_unrealized.labels(exchange=exchange, trading_pair=trading_pair).set(pnl_usd)
+    
+    # Edge
+    def set_edge(self, exchange: str, trading_pair: str, value: float):
+        """Set computed edge value."""
+        self.edge_value.labels(exchange=exchange, trading_pair=trading_pair).set(value)
+    
+    def set_edge_component(self, exchange: str, trading_pair: str, component: str, value: float):
+        """Set edge component value."""
+        self.edge_component.labels(exchange=exchange, trading_pair=trading_pair, component=component).set(value)
+    
+    def set_funding_time_to_next(self, exchange: str, seconds: float):
+        """Set seconds to next funding event."""
+        self.funding_time_to_next.labels(exchange=exchange).set(seconds)
     
     def generate_metrics(self) -> bytes:
         """Generate Prometheus metrics in text format."""
