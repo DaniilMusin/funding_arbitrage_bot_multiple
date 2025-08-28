@@ -24,7 +24,7 @@ repos:
     hooks:
     - id: mypy
       additional_dependencies: [types-requests, types-PyYAML]
-      args: [--config-file=pyproject.toml]
+      args: [--config-file=pyproject.toml, --strict]
       types: [python]
 
 -   repo: https://github.com/PyCQA/bandit

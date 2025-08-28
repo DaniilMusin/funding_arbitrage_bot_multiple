@@ -15,11 +15,15 @@ Comprehensive observability implementation for the Hummingbot trading system wit
 - **WebSocket metrics** (reconnection frequency, message processing delay)
 - **Trading metrics** (order fills, cancellations, latency)
 - **Funding capture** (expected vs actual)
+- **Funding P&L decomposition** (expected vs realized, USD)
 - **Commission tracking** by exchange and trading pair
 - **Hedge slippage** monitoring
 - **Error rates** by type and component
+- **Error streak length** by type/component (bucket-friendly for alerting)
 - **Trading readiness SLA** monitoring
 - **Portfolio metrics** (value, positions, PnL)
+- **Rate-limit tokens remaining** per bucket
+- **Time to settlement** per exchange/pair
 
 ### 🚨 Alerting System
 - **Multi-channel delivery**: Sentry, Slack, Telegram
@@ -204,6 +208,8 @@ await alert_manager.send_alert(alert)
 ### Financial Metrics
 - `hummingbot_funding_captured_total` - Funding captured gauge
 - `hummingbot_funding_expected_total` - Expected funding gauge
+- `hummingbot_funding_pnl_expected_usd` - Expected funding P&L (USD)
+- `hummingbot_funding_pnl_realized_usd_total` - Realized funding P&L (USD)
 - `hummingbot_commissions_paid_total` - Commission counter
 - `hummingbot_hedge_slippage_bps` - Slippage histogram
 - `hummingbot_portfolio_value_usd` - Portfolio value gauge
@@ -212,9 +218,14 @@ await alert_manager.send_alert(alert)
 
 ### System Metrics
 - `hummingbot_errors_total` - Error counter by type
+- `hummingbot_error_streak_length` - Current consecutive error streak
 - `hummingbot_trading_readiness` - Readiness status gauge
 - `hummingbot_readiness_uptime_seconds_total` - Uptime counter
 - Labels vary by metric type
+
+### Rate Limits & Settlement
+- `hummingbot_rate_limit_tokens_remaining{exchange, bucket}` - Remaining tokens in bucket
+- `hummingbot_time_to_settlement_seconds{exchange, trading_pair}` - Time until settlement
 
 ## Alerting Configuration
 
@@ -361,6 +372,69 @@ avg_over_time(hummingbot_trading_readiness[1h])
 
 # Funding capture efficiency  
 hummingbot_funding_captured_total / hummingbot_funding_expected_total
+
+# Funding P&L realized vs expected (5m rate)
+rate(hummingbot_funding_pnl_realized_usd_total[5m])
+/
+avg_over_time(hummingbot_funding_pnl_expected_usd[5m])
+
+# Rate-limit headroom
+min_over_time(hummingbot_rate_limit_tokens_remaining[5m])
+
+# Time to settlement watch
+min_over_time(hummingbot_time_to_settlement_seconds[15m])
+
+# Error streaks
+max_over_time(hummingbot_error_streak_length[15m])
+```
+
+### Dashboards
+Ready-to-import Grafana JSON is provided in `grafana/dashboards/hummingbot-observability.json`.
+
+### Alerting Rules
+PrometheusRule examples (more in `k8s/helm/prometheus-rules.yaml`):
+
+```yaml
+groups:
+  - name: hummingbot-alerts
+    rules:
+      - alert: ErrorStreakHigh
+        expr: max_over_time(hummingbot_error_streak_length[5m]) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Consecutive error streak is high
+          description: Error streak > 5 for 10 minutes
+
+      - alert: RateLimitLowHeadroom
+        expr: min_over_time(hummingbot_rate_limit_tokens_remaining[5m]) < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Rate-limit tokens running low
+          description: Remaining tokens < 10 for 5 minutes
+
+      - alert: SettlementImminent
+        expr: min_over_time(hummingbot_time_to_settlement_seconds[10m]) < 60
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: Settlement event in under a minute
+          description: Time to settlement is below 60s
+
+      - alert: FundingPnLDeviates
+        expr: |
+          rate(hummingbot_funding_pnl_realized_usd_total[15m])
+          < 0.8 * avg_over_time(hummingbot_funding_pnl_expected_usd[15m])
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Realized funding P&L below expected
+          description: Realized funding P&L is lagging behind expected
 ```
 
 ## Testing

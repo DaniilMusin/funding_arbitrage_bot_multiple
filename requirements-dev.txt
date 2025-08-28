@@ -8,3 +8,5 @@ codespell
 detect-secrets
 hypothesis
 aresponses
+pip-tools
+uv

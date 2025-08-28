@@ -130,15 +130,20 @@ def main():
           author_email="dev@hummingbot.org",
           license="Apache 2.0",
           packages=packages,
+          py_modules=[
+              'hb_check_entry'
+          ],
           package_data=package_data,
           install_requires=install_requires,
           ext_modules=cythonize(cython_sources, compiler_directives=compiler_directives, **cython_kwargs),
           include_dirs=[
               np.get_include()
           ],
-          scripts=[
-              "bin/hummingbot_quickstart.py"
-          ],
+          entry_points={
+              'console_scripts': [
+                  'hb-check=hb_check_entry:main',
+              ]
+          },
           cmdclass={"build_ext": BuildExt},
           )
 
