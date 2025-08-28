@@ -1,9 +1,69 @@
 # Example Helm values for funding arbitrage bot
-replicaCount: 1
 
-pdb:
-  enabled: true
-  # At least one pod should remain available during disruptions
-  minAvailable: 1
-  # maxUnavailable can be used instead of minAvailable
-  # maxUnavailable: 0
+global:
+  environment: paper
+  image:
+    repository: hummingbot/hummingbot
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+hummingbot:
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 5723
+    targetPort: 5723
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  env:
+    HEALTH_PORT: "5723"
+    LOG_LEVEL: "INFO"
+    ENVIRONMENT: "paper"
+    PROMETHEUS_ENABLED: "true"
+    PROMETHEUS_PORT: "9090"
+  metrics:
+    enabled: true
+    port: 9090
+  podAntiAffinity:
+    enabled: true
+  topologySpreadConstraints:
+    enabled: true
+
+# Secrets and configs examples (use existing Kubernetes Secrets)
+secrets:
+  tradingKeys:
+    secretName: hummingbot-trading-keys
+    mountPath: /home/hummingbot/secrets/trading
+    keys:
+      - binance_api_key
+      - binance_secret_key
+      - kucoin_api_key
+      - kucoin_secret_key
+  database:
+    secretName: hummingbot-db-credentials
+    mountPath: /home/hummingbot/secrets/db
+    keys:
+      - postgres_user
+      - postgres_password
+      - postgres_db
+      - postgres_host
+  redis:
+    secretName: hummingbot-redis-credentials
+    mountPath: /home/hummingbot/secrets/redis
+    keys:
+      - redis_password
+      - redis_host
+
+monitoring:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      path: /metrics
+      port: metrics

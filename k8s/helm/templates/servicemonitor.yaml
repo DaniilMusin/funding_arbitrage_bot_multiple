@@ -1,0 +1,17 @@
+{{- if and .Values.monitoring.prometheus.enabled .Values.hummingbot.metrics.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "hummingbot.fullname" . }}
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "hummingbot.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.monitoring.prometheus.serviceMonitor.path }}
+      interval: {{ .Values.monitoring.prometheus.serviceMonitor.interval }}
+{{- end }}
