@@ -15,12 +15,11 @@ class EdgeInputs:
 
 def compute_edge(inputs: EdgeInputs) -> float:
     """Compute edge as per formula.
-    edge = expected_funding - (fees_perp + fees_spot) - borrow_cost - slippage_buffer
+    edge = expected_funding - (fees_perp + fees_spot + borrow_cost) - slippage_buffer
     """
     return (
         float(inputs.expected_funding)
-        - (float(inputs.fees_perp) + float(inputs.fees_spot))
-        - float(inputs.borrow_cost)
+        - (float(inputs.fees_perp) + float(inputs.fees_spot) + float(inputs.borrow_cost))
         - float(inputs.slippage_buffer)
     )
 

@@ -227,6 +227,18 @@ await alert_manager.send_alert(alert)
 - `hummingbot_rate_limit_tokens_remaining{exchange, bucket}` - Remaining tokens in bucket
 - `hummingbot_time_to_settlement_seconds{exchange, trading_pair}` - Time until settlement
 
+### Edge Metrics and Entry Logic
+
+- `hummingbot_edge_value{exchange,trading_pair}` - Computed edge value
+- `hummingbot_edge_component{exchange,trading_pair,component}` - Components: `expected_funding`, `fees_perp`, `fees_spot`, `borrow_cost`, `slippage_buffer`
+
+Formula and gate:
+
+```
+edge = expected_funding - (fees_perp + fees_spot + borrow_cost) - slippage_buffer
+enter = edge >= min_edge && readiness_ok && risk_budgets_ok
+```
+
 ## Alerting Configuration
 
 ### Severity Levels

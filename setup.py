@@ -142,6 +142,7 @@ def main():
           entry_points={
               'console_scripts': [
                   'hb-check=hb_check_entry:main',
+                  'hb-start=bin.hummingbot_quickstart:main',
               ]
           },
           cmdclass={"build_ext": BuildExt},

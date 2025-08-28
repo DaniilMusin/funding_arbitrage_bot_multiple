@@ -173,3 +173,33 @@ __all__ = [
     "ReliabilityManager",
     "ReliabilityConfig"
 ]
+
+# Helper decorator to enforce readiness/rate-limit gate on order entry
+def require_trading_readiness(func):
+    """Decorator enforcing readiness, circuit breakers and rate-limit headroom.
+    Expects kwargs to include connector_name and trading_pair when available.
+    """
+    from hummingbot.core.observability.metrics import get_metrics_collector
+
+    def wrapper(*args, **kwargs):
+        rm = get_reliability_manager()
+        # Try to infer connector_name and trading_pair from kwargs or positional args
+        connector_name = kwargs.get("connector_name", kwargs.get("exchange"))
+        trading_pair = kwargs.get("trading_pair", kwargs.get("symbol"))
+        # Common method signatures: (self, connector_name, trading_pair, ...)
+        if connector_name is None and len(args) >= 2:
+            connector_name = args[1]
+        if trading_pair is None and len(args) >= 3:
+            trading_pair = args[2]
+        connector_name = connector_name or "unknown"
+        trading_pair = trading_pair or "unknown"
+        can, reason = rm.can_trade()
+        if not can:
+            get_metrics_collector().record_trading_block(reason=reason, exchange=connector_name, trading_pair=trading_pair)
+            raise RuntimeError(f"Trading blocked: {reason}")
+        if connector_name and not rm.can_pass_rate_limit(connector_name, tokens_needed=1):
+            get_metrics_collector().record_trading_block(reason="rate_limit", exchange=connector_name, trading_pair=trading_pair)
+            raise RuntimeError("Trading blocked: rate_limit")
+        return func(*args, **kwargs)
+
+    return wrapper

@@ -14,11 +14,38 @@ This is a **funding rate arbitrage bot** built on top of [Hummingbot](https://gi
 
 The strategy employs a **delta-neutral hedging mechanism**:
 
-1. **Long Perpetual + Short Spot**: When perpetual funding rates are positive (longs pay shorts), the bot goes long on perpetual futures and short on spot markets
-2. **Short Perpetual + Long Spot**: When perpetual funding rates are negative (shorts pay longs), the bot goes short on perpetual futures and long on spot markets
+1. **Short Perpetual + Long Spot**: When perpetual funding rates are positive (longs pay shorts), the bot shorts the perpetual contract and buys spot to receive funding while staying delta‑neutral
+2. **Long Perpetual + Short Spot**: When perpetual funding rates are negative (shorts pay longs), the bot goes long the perpetual and shorts spot (shorting spot typically requires margin borrowing and incurs borrow‑cost)
 3. **Cross-Perpetual Arbitrage**: The bot can also hedge between different perpetual exchanges when funding rate spreads are significant
 
 The positions are sized to maintain market neutrality, capturing funding payments while minimizing directional price risk.
+
+#### Entry decision and edge formula
+
+```
+edge = expected_funding - (fees_perp + fees_spot + borrow_cost) - slippage_buffer
+enter = edge >= min_edge && readiness_ok && risk_budgets_ok
+```
+
+- Metrics: `/metrics` exposes the edge and its components per exchange/pair:
+  - `hummingbot_edge_value{exchange, trading_pair}`
+  - `hummingbot_edge_component{exchange, trading_pair, component="expected_funding|fees_perp|fees_spot|borrow_cost|slippage_buffer"}`
+  - `hummingbot_funding_time_to_next_seconds{exchange}` and `hummingbot_time_to_settlement_seconds{exchange,trading_pair}`
+
+#### Funding settlement schedules (per exchange)
+
+| Exchange | Schedule (UTC) | Interval |
+|---|---|---|
+| Binance Perpetual | 00:00, 08:00, 16:00 | 8h |
+| Bybit Perpetual | 00:00, 08:00, 16:00 | 8h |
+| OKX Perpetual | 00:00, 08:00, 16:00 | 8h |
+| Gate.io Perpetual | 00:00, 08:00, 16:00 | 8h |
+| KuCoin Perpetual | 00:00, 08:00, 16:00 | 8h |
+| Bitget Perpetual | 00:00, 08:00, 16:00 | 8h |
+| dYdX v4 Perpetual | hourly | 1h |
+| Hyperliquid Perpetual | hourly | 1h |
+
+Note: Exact schedules may vary by instrument. Always verify on the exchange. The bot tracks time‑to‑settlement and avoids opening inside unsafe windows.
 
 ### Exchange Requirements
 
@@ -86,8 +113,8 @@ tokens:
 # Using Docker Compose
 docker-compose up -d
 
-# Or directly
-./start
+# Or via console script (non-Docker)
+hb-start --config-file-name conf/funding_rate_arb.yml
 ```
 
 ### 5. Monitor and Verify
@@ -100,7 +127,7 @@ docker-compose up -d
 ./hb-check funding
 
 # Check health status
-curl http://localhost:5723/health/readiness
+curl http://localhost:5723/health/ready
 ```
 
 ## Health Monitoring
@@ -111,11 +138,37 @@ The bot provides comprehensive health monitoring endpoints:
 - **`/health/readiness`**: Trading readiness (connections, margin, positions)
 - **`/metrics`**: Detailed performance metrics
 
+#### Metrics: Edge breakdown
+
+The following Prometheus series are exported per exchange/pair:
+
+- `hummingbot_edge_value{exchange, trading_pair}`
+- `hummingbot_edge_component{exchange, trading_pair, component}` where component ∈ `expected_funding, fees_perp, fees_spot, borrow_cost, slippage_buffer`
+- `hummingbot_funding_time_to_next_seconds{exchange}` and `hummingbot_time_to_settlement_seconds{exchange,trading_pair}`
+
 ### Trading Safety Gate
 
 - A strict guard blocks new orders until readiness is green: connectors healthy, margin OK, time sync OK, circuit breakers not tripped, and rate-limits available.
-- Guard is enforced in `ScriptStrategyBase.buy/sell` and `ExecutorBase.place_order` and returns an error when blocked. Block reasons are logged and exported to metrics `hummingbot_trading_blocks_total{reason,...}`.
+- Guard is enforced in `ScriptStrategyBase.buy/sell` and `ExecutorBase.place_order` (hard gate at order entry). Block reasons are logged and exported to metrics `hummingbot_trading_blocks_total{reason,...}`.
 - Metrics also expose computed edge (`hummingbot_edge_value`) and time-to-next funding per exchange (`hummingbot_funding_time_to_next_seconds`).
+
+### Upstream layout and updates
+
+- `hummingbot/` is an upstream submodule; treat it as read‑only. Customizations live under `strategies/`, `adapters/`, and `services/`.
+- Update upstream with:
+
+```bash
+./update_upstream.sh  # pulls submodule and locks tested tag
+```
+
+- CI checks verify no edits were made inside `hummingbot/`.
+
+### Recovery on restart
+
+On process restart the bot performs safe recovery before enabling new orders:
+- Loads open positions and active orders across all connectors
+- Reconciles expected vs. actual exposure and auto‑rebalances when feasible
+- Keeps the trading gate closed until reconciliation is green
 
 ## Limitations and Risks
 
@@ -205,6 +258,12 @@ This project is based on the open-source Hummingbot framework. For contributions
   - `adapters/` — exchange/broker abstractions and wrappers
   - `services/` — long-lived services (risk, readiness, observability adapters)
 - Entry points are exposed via `console_scripts`.
+
+### Upstream update flow
+
+1. Run `./update_upstream.sh` to pull a tested tag of Hummingbot
+2. Run tests locally; ensure compatibility noted in the README
+3. CI will fail if any edits are detected under `hummingbot/`
 
 ## License
 
