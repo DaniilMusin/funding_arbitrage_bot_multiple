@@ -1,0 +1,26 @@
+name: Upstream Guard
+
+on:
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  prevent-upstream-mods:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+      - name: Ensure upstream submodule is read-only
+        run: |
+          if [ -d hummingbot ]; then
+            echo "Checking for changes inside upstream submodule path 'hummingbot'"
+            git diff --name-only origin/${{ github.base_ref }}... | grep '^hummingbot/' && {
+              echo 'Detected changes inside upstream submodule path hummingbot/';
+              echo 'Please move customizations to strategies/, adapters/, services/';
+              exit 1;
+            } || echo 'No upstream modifications detected.'
+          else
+            echo 'No submodule directory found (hummingbot). Skipping check.'
+          fi

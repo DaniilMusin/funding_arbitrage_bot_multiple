@@ -197,6 +197,15 @@ This project is based on the open-source Hummingbot framework. For contributions
 2. Follow Hummingbot's governance process for significant changes
 3. Test thoroughly with paper trading before live implementation
 
+## Architecture
+
+- Upstream `hummingbot/` is a read-only submodule. Do not modify code inside this path.
+- Custom code must live under:
+  - `strategies/` — strategy implementations
+  - `adapters/` — exchange/broker abstractions and wrappers
+  - `services/` — long-lived services (risk, readiness, observability adapters)
+- Entry points are exposed via `console_scripts`.
+
 ## License
 
 Licensed under [Apache 2.0](./LICENSE). This project is not affiliated with the Hummingbot Foundation.

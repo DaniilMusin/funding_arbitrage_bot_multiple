@@ -26,6 +26,7 @@ from hummingbot.core.observability import (
     log_exchange_operation,
     log_trading_operation
 )
+from hummingbot.core.observability.metrics import ErrorType
 from hummingbot.logger.observability_logger import get_observability_logger
 
 
@@ -159,6 +160,17 @@ async def demo_metrics():
         expected_funding=12.50,
         captured_funding=12.45
     )
+
+    # Funding P&L decomposition
+    observability.metrics.set_funding_pnl_expected("binance", "BTC-USDT", 12.50)
+    observability.metrics.record_funding_pnl_realized("binance", "BTC-USDT", 12.45)
+
+    # Rate-limit headroom and settlement timing
+    observability.metrics.set_rate_limit_tokens_remaining("binance", "rest_default", 50)
+    observability.metrics.set_time_to_settlement("binance", "BTC-USDT", 3600)
+
+    # Error streak example
+    observability.metrics.set_error_streak("binance", ErrorType.API_ERROR, "order_submitter", 3)
     
     # Trading readiness
     observability.set_trading_readiness("exchange_connection", True)

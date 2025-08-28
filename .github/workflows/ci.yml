@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11"]
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       
@@ -43,10 +43,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel setuptools
           pip install -r requirements-dev.txt
+          pip-compile --quiet || true
+          uv pip compile --quiet || true
           
-      - name: Initialize detect-secrets baseline
+      - name: Enforce detect-secrets baseline
         run: |
-          detect-secrets scan --baseline .secrets.baseline --force-use-all-plugins || true
+          pip install detect-secrets
+          pre-commit run detect-secrets --all-files
           
       - name: Run linting with ruff
         run: ruff check . --output-format=github
@@ -54,15 +57,14 @@ jobs:
       - name: Run ruff formatting check
         run: ruff format --check .
         
-      - name: Run type checking with mypy
-        run: mypy . --show-error-codes
-        continue-on-error: true  # Allow mypy to fail while transitioning to strict mode
+      - name: Run type checking with mypy (strict)
+        run: mypy . --show-error-codes --strict
         
       - name: Run security checks with bandit
-        run: bandit -r . -f json -o bandit-report.json || true
+        run: bandit -r . -f json -o bandit-report.json
         
       - name: Run spell checking
-        run: codespell . || true
+        run: codespell .
         
       - name: Run tests with coverage
         run: |
@@ -99,6 +101,13 @@ jobs:
           scan-ref: '.'
           format: 'sarif'
           output: 'trivy-results.sarif'
+
+      - name: Run Grype vulnerability scanner (filesystem)
+        uses: anchore/scan-action@v4
+        with:
+          path: .
+          fail-build: true
+          severity-cutoff: high
           
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
@@ -140,7 +149,6 @@ jobs:
           dockerfile: Dockerfile
           format: sarif
           output-file: hadolint-results.sarif
-          no-fail: true
           
       - name: Upload Hadolint scan results
         uses: github/codeql-action/upload-sarif@v3
@@ -165,6 +173,13 @@ jobs:
           image-ref: ghcr.io/${{ github.repository }}:latest
           format: 'sarif'
           output: 'trivy-container-results.sarif'
+
+      - name: Run Grype vulnerability scanner (image)
+        uses: anchore/scan-action@v4
+        with:
+          image: ghcr.io/${{ github.repository }}:latest
+          fail-build: true
+          severity-cutoff: high
           
       - name: Upload Trivy container scan results
         uses: github/codeql-action/upload-sarif@v3

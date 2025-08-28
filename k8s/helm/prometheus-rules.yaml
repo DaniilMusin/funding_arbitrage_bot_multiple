@@ -26,3 +26,42 @@ spec:
           annotations:
             summary: High websocket latency
             description: 99th percentile websocket latency is above 500ms for 10 minutes.
+    - name: hummingbot-alerts
+      rules:
+        - alert: ErrorStreakHigh
+          expr: max_over_time(hummingbot_error_streak_length[5m]) > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Consecutive error streak is high
+            description: Error streak > 5 for 10 minutes
+
+        - alert: RateLimitLowHeadroom
+          expr: min_over_time(hummingbot_rate_limit_tokens_remaining[5m]) < 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Rate-limit tokens running low
+            description: Remaining tokens < 10 for 5 minutes
+
+        - alert: SettlementImminent
+          expr: min_over_time(hummingbot_time_to_settlement_seconds[10m]) < 60
+          for: 5m
+          labels:
+            severity: info
+          annotations:
+            summary: Settlement event in under a minute
+            description: Time to settlement is below 60s
+
+        - alert: FundingPnLDeviates
+          expr: |
+            rate(hummingbot_funding_pnl_realized_usd_total[15m])
+            < 0.8 * avg_over_time(hummingbot_funding_pnl_expected_usd[15m])
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: Realized funding P&L below expected
+            description: Realized funding P&L is lagging behind expected

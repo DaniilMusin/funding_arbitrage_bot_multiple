@@ -203,6 +203,44 @@ class MetricsCollector:
             ['exchange', 'trading_pair'],
             registry=self.registry
         )
+
+        # Funding P&L decomposition
+        self.funding_pnl_expected = Gauge(
+            'hummingbot_funding_pnl_expected_usd',
+            'Expected funding P&L in USD',
+            ['exchange', 'trading_pair'],
+            registry=self.registry
+        )
+        self.funding_pnl_realized = Counter(
+            'hummingbot_funding_pnl_realized_usd_total',
+            'Realized funding P&L in USD',
+            ['exchange', 'trading_pair'],
+            registry=self.registry
+        )
+
+        # Rate limit metrics
+        self.rate_limit_tokens_remaining = Gauge(
+            'hummingbot_rate_limit_tokens_remaining',
+            'Remaining tokens in rate-limit bucket',
+            ['exchange', 'bucket'],
+            registry=self.registry
+        )
+
+        # Settlement timing
+        self.time_to_settlement = Gauge(
+            'hummingbot_time_to_settlement_seconds',
+            'Seconds remaining until next settlement',
+            ['exchange', 'trading_pair'],
+            registry=self.registry
+        )
+
+        # Error streaks for alerting (updated by callers)
+        self.error_streak_length = Gauge(
+            'hummingbot_error_streak_length',
+            'Current consecutive error streak length by type',
+            ['exchange', 'error_type', 'component'],
+            registry=self.registry
+        )
         
         # Initialize system info
         self._update_system_info()
@@ -320,6 +358,15 @@ class MetricsCollector:
         """Set unrealized PnL."""
         self.pnl_unrealized.labels(exchange=exchange, trading_pair=trading_pair).set(pnl_usd)
     
+    # Funding P&L
+    def set_funding_pnl_expected(self, exchange: str, trading_pair: str, pnl_usd: float):
+        """Set expected funding P&L in USD."""
+        self.funding_pnl_expected.labels(exchange=exchange, trading_pair=trading_pair).set(pnl_usd)
+
+    def record_funding_pnl_realized(self, exchange: str, trading_pair: str, pnl_usd: float):
+        """Increment realized funding P&L in USD (can be negative)."""
+        self.funding_pnl_realized.labels(exchange=exchange, trading_pair=trading_pair).inc(pnl_usd)
+
     # Edge
     def set_edge(self, exchange: str, trading_pair: str, value: float):
         """Set computed edge value."""
@@ -332,6 +379,25 @@ class MetricsCollector:
     def set_funding_time_to_next(self, exchange: str, seconds: float):
         """Set seconds to next funding event."""
         self.funding_time_to_next.labels(exchange=exchange).set(seconds)
+
+    # Rate limits
+    def set_rate_limit_tokens_remaining(self, exchange: str, bucket: str, tokens_remaining: float):
+        """Set remaining tokens in a rate-limit bucket."""
+        self.rate_limit_tokens_remaining.labels(exchange=exchange, bucket=bucket).set(tokens_remaining)
+
+    # Settlement timing
+    def set_time_to_settlement(self, exchange: str, trading_pair: str, seconds: float):
+        """Set seconds until settlement for a given exchange/pair."""
+        self.time_to_settlement.labels(exchange=exchange, trading_pair=trading_pair).set(seconds)
+
+    # Error streaks (managed by caller when errors resolve)
+    def set_error_streak(self, exchange: str, error_type: ErrorType, component: str, length: int):
+        """Set current consecutive error streak length for alerting/dashboards."""
+        self.error_streak_length.labels(
+            exchange=exchange,
+            error_type=error_type.value,
+            component=component,
+        ).set(length)
     
     def generate_metrics(self) -> bytes:
         """Generate Prometheus metrics in text format."""
