@@ -32,7 +32,7 @@ def root_path() -> Path:
 def get_executor() -> ThreadPoolExecutor:
     global _shared_executor
     if _shared_executor is None:
-        _shared_executor = ThreadPoolExecutor()
+        _shared_executor = ThreadPoolExecutor(max_workers=4)
     return _shared_executor
 
 
@@ -83,7 +83,8 @@ def check_dev_mode():
             return False
         if not path.isdir(".git"):
             return False
-        current_branch = subprocess.check_output(["git", "symbolic-ref", "--short", "HEAD"]).decode("utf8").rstrip()
+        current_branch = subprocess.check_output(["git", "symbolic-ref", "--short", "HEAD"],
+                                               timeout=5).decode("utf8").rstrip()
         if current_branch != "master":
             return True
     except Exception:
