@@ -1,10 +1,9 @@
-script_modules:
-  - core_ext.state_sync
+script_modules: []
 config_path: funding_rate_arb.yml
 
 
 script_strategy:
-  enabled: true
+  enabled: false
   file_path: risk_hooks
   config_path: conf_funding_rate_arb_strategy.yml
 

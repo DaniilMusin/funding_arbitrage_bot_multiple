@@ -19,7 +19,7 @@ exclude = '''
 '''
 
 [build-system]
-requires = ["setuptools", "wheel", "numpy==1.26.4", "cython==3.0.0a10"]
+requires = ["setuptools", "wheel", "numpy==1.26.4", "cython>=3.0.0"]
 
 [tool.isort]
 line_length = 120
@@ -99,13 +99,6 @@ ignore_missing_imports = true
 exclude_dirs = ["test", "tests"]
 skips = ["B101", "B601"]  # Skip assert and shell usage checks in development
 
-[tool.pytest.ini_options]
-asyncio_default_fixture_loop_scope = "function"
-addopts = "--cov=hummingbot --cov-report=term-missing --cov-report=xml --cov-report=html"
-testpaths = ["test"]
-python_files = ["test_*.py", "*_test.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
 
 [tool.coverage.run]
 source = ["hummingbot"]
