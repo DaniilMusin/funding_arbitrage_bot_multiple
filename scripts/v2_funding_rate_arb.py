@@ -87,6 +87,7 @@ class FundingRateArbitrage(StrategyV2Base):
         "binance_perpetual": 60 * 60 * 8,
         "bybit_perpetual": 60 * 60 * 8,
         "okx_perpetual": 60 * 60 * 8,
+        "bing_x": 60 * 60 * 8,
         "hyperliquid_perpetual": 60 * 60 * 1,
     }
     funding_profitability_interval = 60 * 60 * 24
