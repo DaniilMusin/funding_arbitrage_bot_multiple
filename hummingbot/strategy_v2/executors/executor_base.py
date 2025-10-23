@@ -24,6 +24,8 @@ from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 from hummingbot.strategy_v2.runnable_base import RunnableBase
+from hummingbot.core.reliability import get_reliability_manager, require_trading_readiness
+from hummingbot.core.observability.metrics import get_metrics_collector
 
 
 class ExecutorBase(RunnableBase):
@@ -265,6 +267,7 @@ class ExecutorBase(RunnableBase):
         """
         return self.connectors[exchange].budget_checker.adjust_candidates(order_candidates)
 
+    @require_trading_readiness
     def place_order(self,
                     connector_name: str,
                     trading_pair: str,
@@ -286,6 +289,20 @@ class ExecutorBase(RunnableBase):
         :param price: The price for the order.
         :return: The result of the order placement.
         """
+        # Guard: readiness and circuit breakers at executor level as well
+        rm = get_reliability_manager()
+        can, reason = rm.can_trade()
+        if not can:
+            get_metrics_collector().record_trading_block(
+                reason=reason, exchange=connector_name, trading_pair=trading_pair)
+            self.logger().warning(f"Trade blocked: {reason} for {connector_name} {trading_pair}")
+            raise RuntimeError(f"Trading blocked: {reason}")
+        if not rm.can_pass_rate_limit(connector_name, tokens_needed=1):
+            get_metrics_collector().record_trading_block(
+                reason="rate_limit", exchange=connector_name, trading_pair=trading_pair)
+            self.logger().warning(f"Trade blocked: rate_limit for {connector_name} {trading_pair}")
+            raise RuntimeError("Trading blocked: rate_limit")
+
         if side == TradeType.BUY:
             return self._strategy.buy(connector_name, trading_pair, amount, order_type, price, position_action)
         else:

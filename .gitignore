@@ -96,3 +96,49 @@ coverage.xml
 .env
 
 **/.claude/settings.local.json
+
+# Environment-specific files with secrets
+.env.local
+.env.paper
+.env.prod
+.env.secrets
+
+# Secrets directories and files
+secrets/
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+
+# API key files
+*api_key*
+*secret_key*
+*private_key*
+
+# Certificate files
+certs/private/
+gateway_files/certs/private/
+
+# Backup files that might contain secrets
+*.backup
+*backup*
+*.bak
+
+# Temporary files
+*.tmp
+*.temp
+
+# Local development overrides
+docker-compose.override.yml
+.env.override
+
+# Kubernetes secrets (examples only - real secrets should never be committed)
+k8s/secrets-real.yaml
+k8s/sealed-secrets-real.yaml
+
+# Helm value overrides with secrets
+k8s/helm/values-local.yaml
+k8s/helm/values-paper.yaml
+k8s/helm/values-prod.yaml
+!k8s/helm/values.yaml

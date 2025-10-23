@@ -1,5 +1,12 @@
 pytest
 pytest-asyncio
-flake8
+pytest-cov
+ruff
 mypy
+bandit
+codespell
+detect-secrets
+hypothesis
 aresponses
+pip-tools
+uv

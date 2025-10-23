@@ -31,3 +31,128 @@ combine_as_imports = true
 conda_env = "hummingbot"
 filter_files = true
 skip = ["setup.py"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # Pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "E702",  # multiple statements on one line
+    "W504",  # line break after binary operator
+    "W503",  # line break before binary operator
+]
+exclude = [
+    ".git",
+    ".mypy_cache",
+    ".tox",
+    ".venv",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+]
+
+[tool.ruff.per-file-ignores]
+"hummingbot/**/*.pyx" = ["E999", "E225", "E226", "E251"]
+"hummingbot/**/*.pxd" = ["E999", "E225", "E226", "E251"]
+"test/**/*.pyx" = ["E999", "E225", "E226", "E251"]
+"test/**/*.pxd" = ["E999", "E225", "E226", "E251"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = [
+    "aiohttp.*",
+    "aioresponses.*",
+    "websockets.*",
+    "ujson.*",
+    "numpy.*",
+    "pandas.*",
+]
+ignore_missing_imports = true
+
+[tool.bandit]
+exclude_dirs = ["test", "tests"]
+skips = ["B101", "B601"]  # Skip assert and shell usage checks in development
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+addopts = "--cov=hummingbot --cov-report=term-missing --cov-report=xml --cov-report=html"
+testpaths = ["test"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["hummingbot"]
+omit = [
+    "hummingbot/core/gateway/*",
+    "hummingbot/core/management/*",
+    "hummingbot/client/config/config_helpers.py",
+    "hummingbot/client/config/conf_migration.py",
+    "hummingbot/client/config/security.py",
+    "hummingbot/client/hummingbot_application.py",
+    "hummingbot/client/command/*",
+    "hummingbot/client/settings.py",
+    "hummingbot/client/ui/completer.py",
+    "hummingbot/client/ui/layout.py",
+    "hummingbot/client/tab/*",
+    "hummingbot/client/ui/parser.py",
+    "hummingbot/connector/derivative/position.py",
+    "hummingbot/connector/derivative/dydx_v4_perpetual/*",
+    "hummingbot/connector/derivative/dydx_v4_perpetual/data_sources/*",
+    "hummingbot/connector/exchange/injective_v2/account_delegation_script.py",
+    "hummingbot/connector/exchange/paper_trade*",
+    "hummingbot/connector/gateway/**",
+    "hummingbot/connector/test_support/*",
+    "hummingbot/core/utils/gateway_config_utils.py",
+    "hummingbot/core/utils/kill_switch.py",
+    "hummingbot/core/utils/wallet_setup.py",
+    "hummingbot/connector/mock*",
+    "hummingbot/strategy/*/start.py",
+    "hummingbot/strategy/dev*",
+    "hummingbot/user/user_balances.py",
+    "hummingbot/connector/exchange/cube/cube_ws_protobufs/*",
+    "hummingbot/connector/exchange/ndax/*",
+    "hummingbot/strategy_v2/backtesting/*",
+]
+
+[tool.coverage.report]
+fail_under = 75
+precision = 2
+skip_empty = true
+exclude_lines = [
+    "@(abc\\.)?abstractmethod",
+    "if TYPE_CHECKING:",
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if 0:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if settings.DEBUG",
+    "except asyncio.exceptions.TimeoutError:",
+]

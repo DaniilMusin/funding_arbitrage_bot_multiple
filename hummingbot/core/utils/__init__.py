@@ -1,3 +1,29 @@
+def trade_guard(func):
+    """Decorator to enforce readiness guard and circuit breakers before placing orders.
+
+    It expects the wrapped function to receive connector_name and trading_pair as named args or positions.
+    """
+    from functools import wraps
+    from hummingbot.core.reliability import get_reliability_manager
+    from hummingbot.core.observability.metrics import get_metrics_collector
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        connector_name = kwargs.get('connector_name')
+        trading_pair = kwargs.get('trading_pair')
+        # Fallback best-effort for positional
+        if connector_name is None and len(args) >= 2:
+            connector_name = args[0] if isinstance(args[0], str) else kwargs.get('connector_name', 'unknown')
+            trading_pair = args[1] if isinstance(args[1], str) else kwargs.get('trading_pair', 'unknown')
+
+        rm = get_reliability_manager()
+        can, reason = rm.can_trade()
+        if not can:
+            get_metrics_collector().record_trading_block(reason=reason, exchange=connector_name or 'unknown', trading_pair=trading_pair or 'unknown')
+            raise RuntimeError(f"Trade blocked: {reason}")
+        return func(*args, **kwargs)
+    return wrapper
+
 import errno
 import functools
 import socket

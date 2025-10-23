@@ -1,0 +1,17 @@
+exchanges:
+  binance_perpetual:
+    period_hours: 8
+    times_utc: ["00:00", "08:00", "16:00"]
+    timezone: "UTC"
+  bybit_perpetual:
+    period_hours: 8
+    times_utc: ["00:00", "08:00", "16:00"]
+    timezone: "UTC"
+  okx_perpetual:
+    period_hours: 8
+    times_utc: ["00:00", "08:00", "16:00"]
+    timezone: "UTC"
+  kraken_perpetual:
+    period_hours: 4
+    times_utc: ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"]
+    timezone: "UTC"

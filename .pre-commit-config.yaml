@@ -1,36 +1,119 @@
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.41.0
+    hooks:
+      - id: markdownlint
+        args: ["--disable", "MD013"]
+  - repo: https://github.com/PyCQA/ruff-pre-commit
+    rev: v0.6.2
+    hooks:
+      - id: ruff
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.9
+    hooks:
+      - id: bandit
+        args: ["-c", "pyproject.toml"]
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+  - repo: local
+    hooks:
+      - id: block-upstream-edits
+        name: Block edits in upstream submodule
+        entry: bash -c 'git diff --cached --name-only | grep -E "^hummingbot/" && echo "Edits in hummingbot/ are not allowed" && exit 1 || exit 0'
+        language: system
+        types: [python, file]
+repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v2.3.0
+    rev: v4.5.0
     hooks:
     - id: trailing-whitespace
     - id: end-of-file-fixer
     - id: check-yaml
     - id: check-added-large-files
-    - id: flake8
-      types: ['file']
-      files: \.(py|pyx|pxd)$
+    - id: check-merge-conflict
+    - id: debug-statements
     - id: detect-private-key
--   repo: https://github.com/hhatto/autopep8
-    rev: v2.0.4
+
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.8
     hooks:
-    -   id: autopep8
-        args: ["--in-place", "--max-line-length=120", "--select=E26,E114,E117,E128,E129,E201,E202,E225,E226,E231,E261,E301,E302,E303,E304,E305,E306,E401,W291,W292,W293,W391"]
+    - id: ruff
+      args: [--fix, --exit-non-zero-on-fix]
+      types: [python]
+    - id: ruff-format
+      types: [python]
+
+-   repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+    - id: mypy
+      additional_dependencies: [types-requests, types-PyYAML]
+      args: [--config-file=pyproject.toml, --strict]
+      types: [python]
+
+-   repo: https://github.com/PyCQA/bandit
+    rev: 1.7.5
+    hooks:
+    - id: bandit
+      args: [-c, pyproject.toml]
+      types: [python]
+
+-   repo: https://github.com/codespell-project/codespell
+    rev: v2.2.6
+    hooks:
+    - id: codespell
+      args: [--write-changes]
+      exclude: |
+        (?x)^(
+            .*\.min\.js|
+            .*\.min\.css|
+            package-lock\.json|
+            .*\.lock
+        )$
+
+-   repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+    - id: detect-secrets
+      args: ['--baseline', '.secrets.baseline']
+      exclude: |
+        (?x)^(
+            .*\.lock|
+            .*\.min\.js|
+            .*\.min\.css|
+            package-lock\.json
+        )$
+
+-   repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        files: "\\.(py)$"
+        args: [--settings-path=pyproject.toml]
 
 -   repo: https://github.com/pre-commit/mirrors-eslint
-    rev: v8.10.0
+    rev: v8.56.0
     hooks:
     -   id: eslint
         files: \.[jt]sx?$  # *.js, *.jsx, *.ts and *.tsx
         types: [file]
+
 -   repo: https://github.com/CoinAlpha/git-hooks
     rev: 78f0683233a09c68a072fd52740d32c0376d4f0f
     hooks:
     -   id: detect-wallet-private-key
         types: [file]
         exclude: .json
--   repo: https://github.com/pycqa/isort
-    rev: 5.12.0
-    hooks:
-      - id: isort
-        files: "\\.(py)$"
-        args: [--settings-path=pyproject.toml]

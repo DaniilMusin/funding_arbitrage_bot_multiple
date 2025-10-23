@@ -1,0 +1,957 @@
+#!/usr/bin/env python3
+"""
+Unified CLI tool for checking exchange connections, latency, funding rates, and permissions.
+Consolidates all check_*.py scripts into a single convenient interface.
+"""
+
+import asyncio
+import click
+import json
+import os
+import sys
+import time
+import aiohttp
+from typing import Dict, List, Optional, Any
+from datetime import datetime, timezone
+from decimal import Decimal
+
+# Add the hummingbot path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'hummingbot'))
+
+try:
+    from hummingbot.client.config.funding_arbitrage_config import load_and_validate_config
+except ImportError:
+    # Fallback if config is not available
+    def load_and_validate_config():
+        return None
+
+
+class ColorOutput:
+    """Helper class for colored terminal output."""
+    GREEN = '\033[92m'
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
+
+    @classmethod
+    def success(cls, text: str) -> str:
+        return f"{cls.GREEN}✅ {text}{cls.END}"
+
+    @classmethod
+    def error(cls, text: str) -> str:
+        return f"{cls.RED}❌ {text}{cls.END}"
+
+    @classmethod
+    def warning(cls, text: str) -> str:
+        return f"{cls.YELLOW}⚠️  {text}{cls.END}"
+
+    @classmethod
+    def info(cls, text: str) -> str:
+        return f"{cls.BLUE}ℹ️  {text}{cls.END}"
+
+    @classmethod
+    def header(cls, text: str) -> str:
+        return f"{cls.BOLD}{cls.CYAN}{text}{cls.END}"
+
+
+class UnifiedExchangeChecker:
+    """Unified exchange checker that consolidates functionality from all check scripts."""
+
+    def __init__(self):
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.config = None
+        
+        # Load configuration if available
+        try:
+            self.config = load_and_validate_config()
+        except Exception as e:
+            click.echo(ColorOutput.warning(f"Could not load configuration: {e}"))
+
+    async def __aenter__(self):
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+        }
+        
+        timeout = aiohttp.ClientTimeout(total=10)
+        connector = aiohttp.TCPConnector(ssl=False)
+        self.session = aiohttp.ClientSession(
+            headers=headers,
+            timeout=timeout,
+            connector=connector,
+            trust_env=True
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+
+    async def check_exchange_connection(self, exchange: str) -> Dict[str, Any]:
+        """Check connection to a specific exchange."""
+        if exchange == 'binance':
+            return await self._check_binance()
+        elif exchange == 'binance_perpetual':
+            return await self._check_binance_perpetual()
+        elif exchange == 'bybit':
+            return await self._check_bybit()
+        elif exchange == 'bybit_perpetual':
+            return await self._check_bybit_perpetual()
+        elif exchange == 'okx':
+            return await self._check_okx()
+        elif exchange == 'okx_perpetual':
+            return await self._check_okx_perpetual()
+        elif exchange == 'gate_io':
+            return await self._check_gate_io()
+        elif exchange == 'gate_io_perpetual':
+            return await self._check_gate_io_perpetual()
+        elif exchange == 'kucoin':
+            return await self._check_kucoin()
+        elif exchange == 'kucoin_perpetual':
+            return await self._check_kucoin_perpetual()
+        else:
+            return {
+                'status': 'error',
+                'message': f'Unknown exchange: {exchange}',
+                'exchange': exchange
+            }
+
+    async def _check_binance(self) -> Dict[str, Any]:
+        """Check Binance spot connection."""
+        try:
+            url = "https://api.binance.com/api/v3/time"
+            start_time = time.time()
+            
+            async with self.session.get(url) as response:
+                latency = (time.time() - start_time) * 1000
+                
+                if response.status == 200:
+                    data = await response.json()
+                    return {
+                        'status': 'success',
+                        'exchange': 'binance',
+                        'message': 'Connection successful',
+                        'server_time': data.get('serverTime'),
+                        'latency_ms': round(latency, 2)
+                    }
+                else:
+                    return {
+                        'status': 'error',
+                        'exchange': 'binance',
+                        'message': f'HTTP {response.status}',
+                        'latency_ms': round(latency, 2)
+                    }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'exchange': 'binance',
+                'message': str(e)
+            }
+
+    async def _check_binance_perpetual(self) -> Dict[str, Any]:
+        """Check Binance perpetual connection."""
+        try:
+            url = "https://fapi.binance.com/fapi/v1/time"
+            start_time = time.time()
+            
+            async with self.session.get(url) as response:
+                latency = (time.time() - start_time) * 1000
+                
+                if response.status == 200:
+                    data = await response.json()
+                    return {
+                        'status': 'success',
+                        'exchange': 'binance_perpetual',
+                        'message': 'Connection successful',
+                        'server_time': data.get('serverTime'),
+                        'latency_ms': round(latency, 2)
+                    }
+                else:
+                    return {
+                        'status': 'error',
+                        'exchange': 'binance_perpetual',
+                        'message': f'HTTP {response.status}',
+                        'latency_ms': round(latency, 2)
+                    }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'exchange': 'binance_perpetual',
+                'message': str(e)
+            }
+
+    async def _check_bybit(self) -> Dict[str, Any]:
+        """Check Bybit spot connection."""
+        try:
+            url = "https://api.bybit.com/v5/market/time"
+            start_time = time.time()
+            
+            async with self.session.get(url) as response:
+                latency = (time.time() - start_time) * 1000
+                
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('retCode') == 0:
+                        return {
+                            'status': 'success',
+                            'exchange': 'bybit',
+                            'message': 'Connection successful',
+                            'server_time': data.get('result', {}).get('timeSecond'),
+                            'latency_ms': round(latency, 2)
+                        }
+                    else:
+                        return {
+                            'status': 'error',
+                            'exchange': 'bybit',
+                            'message': data.get('retMsg', 'Unknown error'),
+                            'latency_ms': round(latency, 2)
+                        }
+                else:
+                    return {
+                        'status': 'error',
+                        'exchange': 'bybit',
+                        'message': f'HTTP {response.status}',
+                        'latency_ms': round(latency, 2)
+                    }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'exchange': 'bybit',
+                'message': str(e)
+            }
+
+    async def _check_bybit_perpetual(self) -> Dict[str, Any]:
+        """Check Bybit perpetual connection."""
+        # Same as spot for public endpoints
+        result = await self._check_bybit()
+        result['exchange'] = 'bybit_perpetual'
+        return result
+
+    async def _check_okx(self) -> Dict[str, Any]:
+        """Check OKX spot connection."""
+        try:
+            url = "https://www.okx.com/api/v5/public/time"
+            start_time = time.time()
+            
+            async with self.session.get(url) as response:
+                latency = (time.time() - start_time) * 1000
+                
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('code') == '0':
+                        return {
+                            'status': 'success',
+                            'exchange': 'okx',
+                            'message': 'Connection successful',
+                            'server_time': data.get('data', [{}])[0].get('ts'),
+                            'latency_ms': round(latency, 2)
+                        }
+                    else:
+                        return {
+                            'status': 'error',
+                            'exchange': 'okx',
+                            'message': data.get('msg', 'Unknown error'),
+                            'latency_ms': round(latency, 2)
+                        }
+                else:
+                    return {
+                        'status': 'error',
+                        'exchange': 'okx',
+                        'message': f'HTTP {response.status}',
+                        'latency_ms': round(latency, 2)
+                    }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'exchange': 'okx',
+                'message': str(e)
+            }
+
+    async def _check_okx_perpetual(self) -> Dict[str, Any]:
+        """Check OKX perpetual connection."""
+        # Same as spot for public endpoints
+        result = await self._check_okx()
+        result['exchange'] = 'okx_perpetual'
+        return result
+
+    async def _check_gate_io(self) -> Dict[str, Any]:
+        """Check Gate.io spot connection."""
+        try:
+            url = "https://api.gateio.ws/api/v4/spot/time"
+            start_time = time.time()
+            
+            async with self.session.get(url) as response:
+                latency = (time.time() - start_time) * 1000
+                
+                if response.status == 200:
+                    data = await response.json()
+                    return {
+                        'status': 'success',
+                        'exchange': 'gate_io',
+                        'message': 'Connection successful',
+                        'server_time': data.get('server_time'),
+                        'latency_ms': round(latency, 2)
+                    }
+                else:
+                    return {
+                        'status': 'error',
+                        'exchange': 'gate_io',
+                        'message': f'HTTP {response.status}',
+                        'latency_ms': round(latency, 2)
+                    }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'exchange': 'gate_io',
+                'message': str(e)
+            }
+
+    async def _check_gate_io_perpetual(self) -> Dict[str, Any]:
+        """Check Gate.io perpetual connection."""
+        try:
+            url = "https://api.gateio.ws/api/v4/futures/usdt/time"
+            start_time = time.time()
+            
+            async with self.session.get(url) as response:
+                latency = (time.time() - start_time) * 1000
+                
+                if response.status == 200:
+                    data = await response.json()
+                    return {
+                        'status': 'success',
+                        'exchange': 'gate_io_perpetual',
+                        'message': 'Connection successful',
+                        'server_time': data.get('server_time'),
+                        'latency_ms': round(latency, 2)
+                    }
+                else:
+                    return {
+                        'status': 'error',
+                        'exchange': 'gate_io_perpetual',
+                        'message': f'HTTP {response.status}',
+                        'latency_ms': round(latency, 2)
+                    }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'exchange': 'gate_io_perpetual',
+                'message': str(e)
+            }
+
+    async def _check_kucoin(self) -> Dict[str, Any]:
+        """Check KuCoin spot connection."""
+        try:
+            url = "https://api.kucoin.com/api/v1/timestamp"
+            start_time = time.time()
+            
+            async with self.session.get(url) as response:
+                latency = (time.time() - start_time) * 1000
+                
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('code') == '200000':
+                        return {
+                            'status': 'success',
+                            'exchange': 'kucoin',
+                            'message': 'Connection successful',
+                            'server_time': data.get('data'),
+                            'latency_ms': round(latency, 2)
+                        }
+                    else:
+                        return {
+                            'status': 'error',
+                            'exchange': 'kucoin',
+                            'message': data.get('msg', 'Unknown error'),
+                            'latency_ms': round(latency, 2)
+                        }
+                else:
+                    return {
+                        'status': 'error',
+                        'exchange': 'kucoin',
+                        'message': f'HTTP {response.status}',
+                        'latency_ms': round(latency, 2)
+                    }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'exchange': 'kucoin',
+                'message': str(e)
+            }
+
+    async def _check_kucoin_perpetual(self) -> Dict[str, Any]:
+        """Check KuCoin perpetual connection."""
+        try:
+            url = "https://api-futures.kucoin.com/api/v1/timestamp"
+            start_time = time.time()
+            
+            async with self.session.get(url) as response:
+                latency = (time.time() - start_time) * 1000
+                
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('code') == '200000':
+                        return {
+                            'status': 'success',
+                            'exchange': 'kucoin_perpetual',
+                            'message': 'Connection successful',
+                            'server_time': data.get('data'),
+                            'latency_ms': round(latency, 2)
+                        }
+                    else:
+                        return {
+                            'status': 'error',
+                            'exchange': 'kucoin_perpetual',
+                            'message': data.get('msg', 'Unknown error'),
+                            'latency_ms': round(latency, 2)
+                        }
+                else:
+                    return {
+                        'status': 'error',
+                        'exchange': 'kucoin_perpetual',
+                        'message': f'HTTP {response.status}',
+                        'latency_ms': round(latency, 2)
+                    }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'exchange': 'kucoin_perpetual',
+                'message': str(e)
+            }
+
+    async def get_funding_rates(self, pair: str = "BTC-USDT") -> List[Dict[str, Any]]:
+        """Get funding rates for a specific pair from all exchanges."""
+        funding_rates = []
+        
+        # Bybit
+        try:
+            url = f"https://api.bybit.com/v5/market/funding/history"
+            params = {"category": "linear", "symbol": pair.replace("-", ""), "limit": 1}
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('retCode') == 0 and data.get('result', {}).get('list'):
+                        rate = data['result']['list'][0]
+                        funding_rates.append({
+                            'exchange': 'bybit_perpetual',
+                            'pair': pair,
+                            'funding_rate': float(rate.get('fundingRate', 0)),
+                            'next_funding_time': rate.get('fundingRateTimestamp'),
+                            'status': 'success'
+                        })
+        except Exception as e:
+            funding_rates.append({
+                'exchange': 'bybit_perpetual',
+                'pair': pair,
+                'status': 'error',
+                'message': str(e)
+            })
+
+        # Binance Perpetual
+        try:
+            url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+            params = {"symbol": pair.replace("-", "")}
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    funding_rates.append({
+                        'exchange': 'binance_perpetual',
+                        'pair': pair,
+                        'funding_rate': float(data.get('lastFundingRate', 0)),
+                        'next_funding_time': data.get('nextFundingTime'),
+                        'status': 'success'
+                    })
+        except Exception as e:
+            funding_rates.append({
+                'exchange': 'binance_perpetual',
+                'pair': pair,
+                'status': 'error',
+                'message': str(e)
+            })
+
+        # OKX
+        try:
+            url = "https://www.okx.com/api/v5/public/funding-rate"
+            params = {"instId": pair.replace("-", "-")}
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('code') == '0' and data.get('data'):
+                        rate_data = data['data'][0]
+                        funding_rates.append({
+                            'exchange': 'okx_perpetual',
+                            'pair': pair,
+                            'funding_rate': float(rate_data.get('fundingRate', 0)),
+                            'next_funding_time': rate_data.get('nextFundingTime'),
+                            'status': 'success'
+                        })
+        except Exception as e:
+            funding_rates.append({
+                'exchange': 'okx_perpetual',
+                'pair': pair,
+                'status': 'error',
+                'message': str(e)
+            })
+
+        return funding_rates
+
+
+@click.group()
+@click.version_option()
+def cli():
+    """
+    Unified CLI tool for Hummingbot funding arbitrage bot health checks.
+    
+    This tool consolidates all exchange connectivity, latency, funding rate,
+    and permission checks into a single convenient interface.
+    """
+    pass
+
+
+@cli.command()
+@click.option('--exchange', '-e', help='Check specific exchange (optional)')
+@click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
+@click.option('--timeout', '-t', default=10, help='Connection timeout in seconds')
+def connections(exchange: Optional[str], json_output: bool, format: Optional[str], output_dir: str, timeout: int):
+    """Check exchange connections and basic connectivity."""
+    
+    async def run_checks():
+        async with UnifiedExchangeChecker() as checker:
+            if exchange:
+                exchanges_to_check = [exchange]
+            else:
+                exchanges_to_check = [
+                    'binance', 'binance_perpetual', 'bybit', 'bybit_perpetual',
+                    'okx', 'okx_perpetual', 'gate_io', 'gate_io_perpetual',
+                    'kucoin', 'kucoin_perpetual'
+                ]
+            
+            results = []
+            for ex in exchanges_to_check:
+                result = await checker.check_exchange_connection(ex)
+                results.append(result)
+            
+            return results
+    
+    results = asyncio.run(run_checks())
+
+    # Handle on-screen output
+    if json_output and not format:
+        click.echo(json.dumps(results, indent=2))
+    else:
+        click.echo(ColorOutput.header("🔗 Exchange Connection Status"))
+        click.echo()
+        
+        success_count = 0
+        for result in results:
+            exchange_name = result.get('exchange', 'unknown')
+            status = result.get('status', 'unknown')
+            message = result.get('message', '')
+            latency = result.get('latency_ms')
+            
+            if status == 'success':
+                success_count += 1
+                latency_str = f" ({latency}ms)" if latency else ""
+                click.echo(ColorOutput.success(f"{exchange_name}: {message}{latency_str}"))
+            else:
+                click.echo(ColorOutput.error(f"{exchange_name}: {message}"))
+        
+        click.echo()
+        click.echo(f"Summary: {success_count}/{len(results)} exchanges connected successfully")
+
+    # Handle artifact output
+    if format:
+        # Create dated directory
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        target_dir = os.path.join(output_dir, today)
+        os.makedirs(target_dir, exist_ok=True)
+
+        timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+        if format == 'json':
+            artifact_path = os.path.join(target_dir, f'hb-check-connections-{timestamp}.json')
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2)
+        elif format == 'md':
+            artifact_path = os.path.join(target_dir, f'hb-check-connections-{timestamp}.md')
+            lines = []
+            lines.append('# Отчет о подключениях к биржам')
+            lines.append('')
+            success = [r for r in results if r.get('status') == 'success']
+            failure = [r for r in results if r.get('status') != 'success']
+            lines.append('## ✅ Успех')
+            for r in success:
+                latency = r.get('latency_ms')
+                latency_str = f" ({latency}ms)" if latency is not None else ''
+                lines.append(f"- {r.get('exchange', 'unknown')}: OK{latency_str}")
+            lines.append('')
+            lines.append('## ❌ Ошибки')
+            for r in failure:
+                lines.append(f"- {r.get('exchange', 'unknown')}: {r.get('message', 'error')}")
+            lines.append('')
+            lines.append(f"Итог: {len(success)}/{len(results)} подключений успешны")
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+
+        click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
+
+
+@cli.command()
+@click.option('--exchange', '-e', help='Check specific exchange (optional)')
+@click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
+@click.option('--threshold', '-t', default=1000, help='Latency threshold in ms')
+def latency(exchange: Optional[str], json_output: bool, format: Optional[str], output_dir: str, threshold: int):
+    """Check latency to exchanges."""
+    
+    async def run_latency_checks():
+        async with UnifiedExchangeChecker() as checker:
+            if exchange:
+                exchanges_to_check = [exchange]
+            else:
+                exchanges_to_check = [
+                    'binance', 'binance_perpetual', 'bybit', 'bybit_perpetual',
+                    'okx', 'okx_perpetual', 'gate_io', 'gate_io_perpetual',
+                    'kucoin', 'kucoin_perpetual'
+                ]
+            
+            results = []
+            for ex in exchanges_to_check:
+                result = await checker.check_exchange_connection(ex)
+                results.append(result)
+            
+            return results
+    
+    results = asyncio.run(run_latency_checks())
+    
+    if json_output and not format:
+        click.echo(json.dumps(results, indent=2))
+    else:
+        click.echo(ColorOutput.header("⚡ Exchange Latency Report"))
+        click.echo()
+        
+        for result in results:
+            exchange_name = result.get('exchange', 'unknown')
+            latency = result.get('latency_ms')
+            status = result.get('status', 'unknown')
+            
+            if status == 'success' and latency is not None:
+                if latency <= threshold:
+                    click.echo(ColorOutput.success(f"{exchange_name}: {latency}ms"))
+                else:
+                    click.echo(ColorOutput.warning(f"{exchange_name}: {latency}ms (above threshold)"))
+            else:
+                click.echo(ColorOutput.error(f"{exchange_name}: Connection failed"))
+        
+        click.echo()
+        avg_latency = sum(r.get('latency_ms', 0) for r in results if r.get('latency_ms')) / len([r for r in results if r.get('latency_ms')])
+        click.echo(f"Average latency: {avg_latency:.1f}ms")
+
+    # Save artifact if requested
+    if format:
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        target_dir = os.path.join(output_dir, today)
+        os.makedirs(target_dir, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+        if format == 'json':
+            artifact_path = os.path.join(target_dir, f'hb-check-latency-{timestamp}.json')
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2)
+        else:
+            artifact_path = os.path.join(target_dir, f'hb-check-latency-{timestamp}.md')
+            lines = ['# Latency Report', '']
+            for r in results:
+                ex = r.get('exchange', 'unknown')
+                lat = r.get('latency_ms')
+                status = r.get('status')
+                if status == 'success' and lat is not None:
+                    lines.append(f'- {ex}: {lat}ms')
+                else:
+                    lines.append(f'- {ex}: error')
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+        click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
+
+
+@cli.command()
+@click.option('--pair', '-p', default='BTC-USDT', help='Trading pair to check')
+@click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
+def funding(pair: str, json_output: bool, format: Optional[str], output_dir: str):
+    """Check funding rates across exchanges."""
+    
+    async def get_funding_data():
+        async with UnifiedExchangeChecker() as checker:
+            return await checker.get_funding_rates(pair)
+    
+    results = asyncio.run(get_funding_data())
+    
+    if json_output and not format:
+        click.echo(json.dumps(results, indent=2))
+    else:
+        click.echo(ColorOutput.header(f"💰 Funding Rates for {pair}"))
+        click.echo()
+        
+        successful_rates = [r for r in results if r.get('status') == 'success']
+        
+        if successful_rates:
+            # Sort by funding rate
+            successful_rates.sort(key=lambda x: x.get('funding_rate', 0), reverse=True)
+            
+            for rate_data in successful_rates:
+                exchange = rate_data['exchange']
+                rate = rate_data.get('funding_rate', 0)
+                rate_pct = rate * 100
+                
+                if rate > 0:
+                    click.echo(ColorOutput.success(f"{exchange}: +{rate_pct:.4f}% (longs pay shorts)"))
+                elif rate < 0:
+                    click.echo(ColorOutput.info(f"{exchange}: {rate_pct:.4f}% (shorts pay longs)"))
+                else:
+                    click.echo(f"{exchange}: {rate_pct:.4f}%")
+            
+            # Show potential arbitrage opportunities
+            if len(successful_rates) >= 2:
+                highest = successful_rates[0]['funding_rate']
+                lowest = successful_rates[-1]['funding_rate']
+                spread = (highest - lowest) * 100
+                
+                click.echo()
+                if spread > 0.01:  # 0.01% threshold
+                    click.echo(ColorOutput.success(f"Arbitrage opportunity: {spread:.4f}% spread"))
+                    click.echo(f"Long on {successful_rates[-1]['exchange']}, Short on {successful_rates[0]['exchange']}")
+                else:
+                    click.echo(ColorOutput.info(f"No significant arbitrage opportunity (spread: {spread:.4f}%)"))
+        
+        # Show errors
+        failed_rates = [r for r in results if r.get('status') == 'error']
+        if failed_rates:
+            click.echo()
+            click.echo(ColorOutput.warning("Failed to get funding rates from:"))
+            for rate_data in failed_rates:
+                click.echo(ColorOutput.error(f"{rate_data['exchange']}: {rate_data.get('message', 'Unknown error')}"))
+
+    # Save artifact if requested
+    if format:
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        target_dir = os.path.join(output_dir, today)
+        os.makedirs(target_dir, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+        if format == 'json':
+            artifact_path = os.path.join(target_dir, f'hb-check-funding-{pair}-{timestamp}.json')
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2)
+        else:
+            artifact_path = os.path.join(target_dir, f'hb-check-funding-{pair}-{timestamp}.md')
+            lines = []
+            lines.append(f'# Funding Rates for {pair}')
+            lines.append('')
+            ok = [r for r in results if r.get('status') == 'success']
+            err = [r for r in results if r.get('status') == 'error']
+            for r in sorted(ok, key=lambda x: x.get('funding_rate', 0), reverse=True):
+                rate = r.get('funding_rate', 0) * 100
+                lines.append(f"- {r['exchange']}: {rate:.4f}%")
+            if err:
+                lines.append('')
+                lines.append('## Errors')
+                for r in err:
+                    lines.append(f"- {r['exchange']}: {r.get('message', 'error')}")
+            with open(artifact_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+        click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
+
+
+@cli.command()
+@click.option('--exchange', '-e', help='Check specific exchange (optional)')
+@click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
+def permissions(exchange: Optional[str], json_output: bool, format: Optional[str], output_dir: str):
+    """Check API permissions for configured exchanges."""
+    
+    # This would require authenticated API calls, which need API keys
+    # For now, we'll show which exchanges are configured
+    
+    try:
+        from hummingbot.client.config.funding_arbitrage_config import load_and_validate_config
+        config = load_and_validate_config()
+        
+        configured_exchanges = config.get_configured_exchanges()
+        missing_creds = config.validate_exchange_connectivity()
+        
+        if json_output and not format:
+            result = {
+                'configured_exchanges': configured_exchanges,
+                'missing_credentials': missing_creds
+            }
+            click.echo(json.dumps(result, indent=2))
+        else:
+            click.echo(ColorOutput.header("🔐 Exchange API Configuration Status"))
+            click.echo()
+            
+            all_exchanges = [
+                'binance', 'binance_perpetual', 'bybit', 'bybit_perpetual',
+                'okx', 'okx_perpetual', 'gate_io', 'gate_io_perpetual',
+                'kucoin', 'kucoin_perpetual'
+            ]
+            
+            for ex in all_exchanges:
+                if ex in configured_exchanges:
+                    click.echo(ColorOutput.success(f"{ex}: API credentials configured"))
+                elif ex in missing_creds:
+                    missing = ', '.join(missing_creds[ex])
+                    click.echo(ColorOutput.warning(f"{ex}: Missing {missing}"))
+                else:
+                    click.echo(ColorOutput.error(f"{ex}: No credentials found"))
+            
+            click.echo()
+            click.echo(f"Summary: {len(configured_exchanges)}/{len(all_exchanges)} exchanges configured")
+            
+            if missing_creds:
+                click.echo()
+                click.echo(ColorOutput.info("To configure missing exchanges, set the following environment variables:"))
+                for ex, missing in missing_creds.items():
+                    for cred in missing:
+                        env_var = f"{ex.upper()}_{cred.upper()}"
+                        click.echo(f"  {env_var}")
+        # Save artifact if requested
+        if format:
+            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            target_dir = os.path.join(output_dir, today)
+            os.makedirs(target_dir, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+            data = {
+                'configured_exchanges': configured_exchanges,
+                'missing_credentials': missing_creds
+            }
+            if format == 'json':
+                artifact_path = os.path.join(target_dir, f'hb-check-permissions-{timestamp}.json')
+                with open(artifact_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2)
+            else:
+                artifact_path = os.path.join(target_dir, f'hb-check-permissions-{timestamp}.md')
+                lines = []
+                lines.append('# Конфигурация API ключей')
+                lines.append('')
+                lines.append('## Настроены')
+                for ex in sorted(configured_exchanges):
+                    lines.append(f'- {ex}')
+                lines.append('')
+                lines.append('## Отсутствуют')
+                for ex, creds in missing_creds.items():
+                    lines.append(f'- {ex}: {", ".join(creds)}')
+                with open(artifact_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(lines))
+            click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
+    
+    except Exception as e:
+        if json_output and not format:
+            click.echo(json.dumps({'error': str(e)}, indent=2))
+        else:
+            click.echo(ColorOutput.error(f"Could not check permissions: {e}"))
+            click.echo(ColorOutput.info("Make sure .env file is configured with API credentials"))
+
+
+@cli.command()
+@click.option('--json-output', '-j', is_flag=True, help='Output results in JSON format')
+@click.option('--format', type=click.Choice(['json', 'md']), help='Save report artifact in the selected format')
+@click.option('--output-dir', default='./reports', help='Directory to store report artifacts')
+def health(json_output: bool, format: Optional[str], output_dir: str):
+    """Check overall system health and readiness."""
+    
+    async def run_health_checks():
+        async with UnifiedExchangeChecker() as checker:
+            # Check connections
+            exchanges = ['binance', 'bybit_perpetual', 'okx_perpetual']  # Sample exchanges
+            connection_results = []
+            for ex in exchanges:
+                result = await checker.check_exchange_connection(ex)
+                connection_results.append(result)
+            
+            # Check funding rates
+            funding_results = await checker.get_funding_rates('BTC-USDT')
+            
+            return connection_results, funding_results
+    
+    try:
+        connection_results, funding_results = asyncio.run(run_health_checks())
+        
+        # Analyze results
+        successful_connections = [r for r in connection_results if r.get('status') == 'success']
+        successful_funding = [r for r in funding_results if r.get('status') == 'success']
+        
+        health_status = {
+            'overall_status': 'healthy' if len(successful_connections) >= 2 and len(successful_funding) >= 1 else 'unhealthy',
+            'connections': {
+                'total': len(connection_results),
+                'successful': len(successful_connections),
+                'failed': len(connection_results) - len(successful_connections)
+            },
+            'funding_rates': {
+                'total': len(funding_results),
+                'successful': len(successful_funding),
+                'failed': len(funding_results) - len(successful_funding)
+            },
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+        
+        if json_output and not format:
+            click.echo(json.dumps(health_status, indent=2))
+        else:
+            click.echo(ColorOutput.header("🏥 System Health Check"))
+            click.echo()
+            
+            if health_status['overall_status'] == 'healthy':
+                click.echo(ColorOutput.success("Overall Status: HEALTHY"))
+            else:
+                click.echo(ColorOutput.error("Overall Status: UNHEALTHY"))
+            
+            click.echo()
+            click.echo(f"Exchange Connections: {health_status['connections']['successful']}/{health_status['connections']['total']} successful")
+            click.echo(f"Funding Rate Sources: {health_status['funding_rates']['successful']}/{health_status['funding_rates']['total']} successful")
+            
+            click.echo()
+            if health_status['overall_status'] == 'healthy':
+                click.echo(ColorOutput.success("✅ System is ready for trading"))
+            else:
+                click.echo(ColorOutput.error("❌ System is not ready for trading"))
+                click.echo(ColorOutput.info("Run 'hb-check connections' and 'hb-check funding' for detailed diagnostics"))
+    
+        # Save artifact if requested
+        if format:
+            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            target_dir = os.path.join(output_dir, today)
+            os.makedirs(target_dir, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime('%H%M%S')
+            if format == 'json':
+                artifact_path = os.path.join(target_dir, f'hb-check-health-{timestamp}.json')
+                with open(artifact_path, 'w', encoding='utf-8') as f:
+                    json.dump(health_status, f, indent=2)
+            else:
+                artifact_path = os.path.join(target_dir, f'hb-check-health-{timestamp}.md')
+                lines = ['# System Health Check', '']
+                lines.append(f"Overall: {health_status['overall_status']}")
+                lines.append('')
+                lines.append(f"Connections: {health_status['connections']['successful']}/{health_status['connections']['total']}")
+                lines.append(f"Funding: {health_status['funding_rates']['successful']}/{health_status['funding_rates']['total']}")
+                with open(artifact_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(lines))
+            click.echo(ColorOutput.info(f"Artifact saved: {artifact_path}"))
+    except Exception as e:
+        if json_output and not format:
+            click.echo(json.dumps({'error': str(e), 'overall_status': 'error'}, indent=2))
+        else:
+            click.echo(ColorOutput.error(f"Health check failed: {e}"))
+
+
+if __name__ == '__main__':
+    cli()

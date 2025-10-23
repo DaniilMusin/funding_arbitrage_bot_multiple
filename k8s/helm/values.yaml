@@ -1,0 +1,378 @@
+# Hummingbot Helm Chart Values
+# This file contains comprehensive configuration for deploying Hummingbot in Kubernetes
+# with proper secrets management and environment-specific settings
+
+# Global configuration
+global:
+  # Environment: local, paper, prod
+  environment: local
+  # Image settings
+  image:
+    repository: hummingbot/hummingbot
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  # Security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+# Application configuration
+hummingbot:
+  # Replica count
+  replicaCount: 1
+  
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 5723
+    targetPort: 5723
+    name: health
+  
+  # Resource limits and requests
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  
+  # Health checks
+  healthcheck:
+    enabled: true
+    livenessProbe:
+      httpGet:
+        path: /health/liveness
+        port: 5723
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /health/readiness
+        port: 5723
+      initialDelaySeconds: 15
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+
+  # Metrics
+  metrics:
+    enabled: true
+    port: 9090
+
+  # Scheduling
+  podAntiAffinity:
+    enabled: true
+  topologySpreadConstraints:
+    enabled: true
+
+  # PriorityClass
+  priorityClassName: ""
+  priorityClass:
+    enabled: false
+    name: hummingbot-critical
+    value: 1000000000
+    description: Priority class for critical Hummingbot pods
+  
+  # Environment variables (non-sensitive)
+  env:
+    HEALTH_PORT: "5723"
+    LOG_LEVEL: "INFO"
+    ENVIRONMENT: "{{ .Values.global.environment }}"
+  
+  # Volume mounts for configuration and data
+  volumes:
+    config:
+      enabled: true
+      size: 1Gi
+      storageClass: "standard"
+    logs:
+      enabled: true
+      size: 5Gi
+      storageClass: "standard"
+    data:
+      enabled: true
+      size: 10Gi
+      storageClass: "standard"
+
+# Secrets configuration
+# IMPORTANT: Never put actual secrets in this file!
+# Use Kubernetes Secrets or SealedSecrets instead
+secrets:
+  # Trading API keys - mount from Kubernetes Secret
+  tradingKeys:
+    # Name of the Kubernetes Secret containing trading API keys
+    secretName: hummingbot-trading-keys
+    # Keys to mount from the secret
+    keys:
+      - binance_api_key
+      - binance_secret_key
+      - coinbase_api_key
+      - coinbase_secret_key
+      - kraken_api_key
+      - kraken_secret_key
+    # Mount path in container
+    mountPath: /home/hummingbot/secrets/trading
+  
+  # Database credentials
+  database:
+    secretName: hummingbot-db-credentials
+    keys:
+      - postgres_user
+      - postgres_password
+      - postgres_db
+      - postgres_host
+    mountPath: /home/hummingbot/secrets/db
+  
+  # Redis credentials
+  redis:
+    secretName: hummingbot-redis-credentials
+    keys:
+      - redis_password
+      - redis_host
+    mountPath: /home/hummingbot/secrets/redis
+  
+  # Gateway configuration
+  gateway:
+    secretName: hummingbot-gateway-secrets
+    keys:
+      - gateway_passphrase
+      - gateway_cert
+      - gateway_key
+    mountPath: /home/hummingbot/secrets/gateway
+  
+  # Telegram bot configuration
+  telegram:
+    secretName: hummingbot-telegram-secrets
+    keys:
+      - telegram_token
+      - telegram_chat_id
+    mountPath: /home/hummingbot/secrets/telegram
+  
+  # Monitoring and observability
+  monitoring:
+    secretName: hummingbot-monitoring-secrets
+    keys:
+      - prometheus_auth_token
+      - grafana_api_key
+      - datadog_api_key
+    mountPath: /home/hummingbot/secrets/monitoring
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  auth:
+    # Use existing secret for database credentials
+    existingSecret: hummingbot-db-credentials
+    secretKeys:
+      adminPasswordKey: postgres_password
+      userPasswordKey: postgres_password
+    database: hummingbot
+    username: hummingbot
+  
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: "standard"
+  
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+
+# Redis configuration
+redis:
+  enabled: true
+  auth:
+    enabled: true
+    existingSecret: hummingbot-redis-credentials
+    existingSecretPasswordKey: redis_password
+  
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClass: "standard"
+  
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+# Gateway service configuration
+gateway:
+  enabled: false  # Enable for trading strategies that require it
+  replicaCount: 1
+  
+  image:
+    repository: hummingbot/gateway
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 15888
+    targetPort: 15888
+  
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+
+# Monitoring and observability
+monitoring:
+  # Prometheus monitoring
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      path: /metrics
+      port: metrics
+  
+  # Grafana dashboards
+  grafana:
+    enabled: true
+    dashboards:
+      enabled: true
+  
+  # Logging
+  logging:
+    enabled: true
+    level: INFO
+    format: json
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+# Network policies
+networkPolicy:
+  enabled: true
+  ingress:
+    enabled: true
+    # Allow traffic from monitoring namespace
+    allowFrom:
+      - namespaceSelector:
+          matchLabels:
+            name: monitoring
+    # Allow traffic from same namespace
+    allowFromSameNamespace: true
+  
+  egress:
+    enabled: true
+    # Allow DNS resolution
+    allowDNS: true
+    # Allow external trading APIs
+    allowExternal: true
+    allowToNamespaces:
+      - monitoring
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Horizontal Pod Autoscaler
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Environment-specific overrides
+environments:
+  local:
+    global:
+      environment: local
+    hummingbot:
+      env:
+        LOG_LEVEL: DEBUG
+        PAPER_TRADING: "true"
+    monitoring:
+      prometheus:
+        enabled: false
+      grafana:
+        enabled: false
+    networkPolicy:
+      enabled: false
+  
+  paper:
+    global:
+      environment: paper
+    hummingbot:
+      env:
+        LOG_LEVEL: INFO
+        PAPER_TRADING: "true"
+    monitoring:
+      prometheus:
+        enabled: true
+      grafana:
+        enabled: true
+    networkPolicy:
+      enabled: true
+  
+  prod:
+    global:
+      environment: prod
+    hummingbot:
+      replicaCount: 2
+      env:
+        LOG_LEVEL: WARN
+        PAPER_TRADING: "false"
+      resources:
+        limits:
+          cpu: 4000m
+          memory: 8Gi
+        requests:
+          cpu: 1000m
+          memory: 2Gi
+    monitoring:
+      prometheus:
+        enabled: true
+      grafana:
+        enabled: true
+    networkPolicy:
+      enabled: true
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 5
+
+# Backup configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: 30  # Keep backups for 30 days
+  storage:
+    size: 50Gi
+    storageClass: "standard"
+  
+  # What to backup
+  targets:
+    - name: config
+      path: /home/hummingbot/conf
+    - name: logs
+      path: /home/hummingbot/logs
+    - name: data
+      path: /home/hummingbot/data
+    - name: database
+      type: postgresql
+      secret: hummingbot-db-credentials
