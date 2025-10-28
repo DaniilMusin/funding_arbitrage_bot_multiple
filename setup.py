@@ -68,7 +68,6 @@ def main():
         "numpy>=1.25.0,<2",
         "objgraph",
         "pandas>=2.0.3",
-        "pandas-ta>=0.3.14b",
         "prompt_toolkit>=3.0.39",
         "protobuf>=4.23.3",
         "psutil>=5.9.5",
@@ -96,15 +95,14 @@ def main():
     cython_kwargs = {
         "language": "c++",
         "language_level": 3,
+        "compiler_directives": {
+            "annotation_typing": False,
+        }
     }
 
     cython_sources = ["hummingbot/**/*.pyx"]
-
-    compiler_directives = {
-        "annotation_typing": False,
-    }
     if os.environ.get("WITHOUT_CYTHON_OPTIMIZATIONS"):
-        compiler_directives.update({
+        cython_kwargs["compiler_directives"].update({
             "optimize.use_switch": False,
             "optimize.unpack_method_calls": False,
         })
@@ -135,7 +133,7 @@ def main():
           ],
           package_data=package_data,
           install_requires=install_requires,
-          ext_modules=cythonize(cython_sources, compiler_directives=compiler_directives, **cython_kwargs),
+          ext_modules=cythonize(cython_sources, **cython_kwargs),
           include_dirs=[
               np.get_include()
           ],
