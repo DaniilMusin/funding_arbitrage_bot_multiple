@@ -1,9 +1,76 @@
-min_funding_rate_profitability: 0.0005
+min_funding_rate_profitability: 0.0015  # 0.15% daily spread minimum (balanced strategy)
 position_size_quote: 100
 leverage: 5
 connectors:
   - okx_perpetual
   - hyperliquid_perpetual
 tokens:
+  # Top tier - highest liquidity (strongly recommended)
   - BTC
   - ETH
+  - SOL
+  - BNB
+  - XRP
+  - ADA
+  - DOT
+  - AVAX
+  - MATIC
+  - LINK
+  # Tier 2 - good liquidity
+  - ARB
+  - OP
+  - ATOM
+  - NEAR
+  - APT
+  - SUI
+  - FTM
+  - ALGO
+  - UNI
+  - AAVE
+  - LTC
+  - BCH
+  - ETC
+  - FIL
+  - DOGE
+  - TRX
+  - XLM
+  - HBAR
+  - ICP
+  - IMX
+  # Tier 3 - moderate liquidity (use with caution)
+  - CRV
+  - LDO
+  - MKR
+  - SNX
+  - COMP
+  - SUSHI
+  - GALA
+  - GMT
+  - APE
+  - BLUR
+  - SHIB
+  - WLD
+  - ARK
+  - ORDI
+  - TIA
+  - JTO
+  - PYTH
+  - JUP
+  - STRK
+  - MEME
+  - WIF
+  - PENDLE
+  - ENA
+  - ETHFI
+  - OMNI
+  - SAGA
+  - TAO
+  - W
+  - NOT
+  - ZRO
+  - ZK
+  - BLAST
+  - EIGEN
+  - ME
+  - MOVE
+  - HYPE
