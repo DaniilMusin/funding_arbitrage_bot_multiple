@@ -5,7 +5,9 @@ connectors:
   - okx_perpetual
   - hyperliquid_perpetual
 tokens:
-  # Top tier - highest liquidity (strongly recommended)
+  # ============================================================================
+  # TOP TIER - HIGHEST LIQUIDITY (Recommended for beginners)
+  # ============================================================================
   - BTC
   - ETH
   - SOL
@@ -14,63 +16,265 @@ tokens:
   - ADA
   - DOT
   - AVAX
-  - MATIC
+  - MATIC  # POL
   - LINK
-  # Tier 2 - good liquidity
-  - ARB
-  - OP
-  - ATOM
-  - NEAR
-  - APT
-  - SUI
-  - FTM
-  - ALGO
-  - UNI
-  - AAVE
+
+  # ============================================================================
+  # TIER 2 - LARGE CAP (Good liquidity, stable)
+  # ============================================================================
   - LTC
   - BCH
   - ETC
-  - FIL
-  - DOGE
   - TRX
   - XLM
+  - ATOM
+  - NEAR
+  - ALGO
   - HBAR
   - ICP
-  - IMX
-  # Tier 3 - moderate liquidity (use with caution)
+  - FIL
+  - APT
+  - SUI
+  - ARB
+  - OP
+  - FTM
+  - DOGE
+
+  # ============================================================================
+  # TIER 3 - DEFI TOKENS (Medium-high liquidity)
+  # ============================================================================
+  - UNI
+  - AAVE
   - CRV
   - LDO
   - MKR
   - SNX
   - COMP
   - SUSHI
-  - GALA
-  - GMT
-  - APE
-  - BLUR
-  - SHIB
-  - WLD
-  - ARK
-  - ORDI
-  - TIA
-  - JTO
-  - PYTH
-  - JUP
-  - STRK
-  - MEME
-  - WIF
+  - GMX
   - PENDLE
+  - DYDX
+  - INJ
+  - IMX
+  - BLUR
+  - ONDO
+  - FXS
+  - ENS
+  - UMA
+  - BAL
+  - RSR
+  - RDNT
+  - MORPHO
+
+  # ============================================================================
+  # TIER 4 - LAYER 1/2 & INFRASTRUCTURE (Medium liquidity)
+  # ============================================================================
+  - TON
+  - TIA
+  - SEI
+  - APE
+  - MINA
+  - CELO
+  - CFX
+  - IOTA
+  - NEO
+  - BSV
+  - ZEC
+  - ZEN
+  - STX
+  - STRAX
+  - NTRN
+  - DYM
+  - LINEA
+  - ZETA
+  - MANTA
+  - BLAST
+  - BERA
+  - CANTO
+
+  # ============================================================================
+  # TIER 5 - AI & GAMING TOKENS (Variable liquidity)
+  # ============================================================================
+  - TAO
+  - RENDER  # RNDR
+  - RNDR
+  - FET
+  - WLD
+  - AIXBT
+  - AI16Z
+  - AI
+  - VIRTUAL
+  - GALA
+  - SAND
+  - MAVIA
+  - ILV
+  - BIGTIME
+  - PIXEL
+  - NFTI
+  - YGG
+  - CYBER
+
+  # ============================================================================
+  # TIER 6 - MEME & TRENDING TOKENS (High volatility)
+  # ============================================================================
+  - DOGE
+  - SHIB
+  - kSHIB
+  - PEPE
+  - kPEPE
+  - FLOKI
+  - kFLOKI
+  - WIF
+  - BONK
+  - kBONK
+  - BOME
+  - MEME
+  - POPCAT
+  - GOAT
+  - PNUT
+  - FARTCOIN
+  - TRUMP
+  - MELANIA
+  - MEW
+  - MYRO
+  - BRETT
+  - MOODENG
+  - CHILLGUY
+  - TURBO
+  - DOOD
+
+  # ============================================================================
+  # TIER 7 - NEW/RECENT LISTINGS (Use with caution)
+  # ============================================================================
+  - HYPE
+  - MOVE
+  - ME
+  - PENGU
+  - USUAL
+  - BIO
+  - EIGEN
+  - GRASS
   - ENA
   - ETHFI
+  - REZ
   - OMNI
   - SAGA
-  - TAO
   - W
-  - NOT
-  - ZRO
   - ZK
-  - BLAST
-  - EIGEN
-  - ME
-  - MOVE
-  - HYPE
+  - ZRO
+  - NOT
+  - HMSTR
+  - CATI
+  - DOGS
+  - kDOGS
+
+  # ============================================================================
+  # TIER 8 - MID-CAP ALTCOINS (Moderate liquidity)
+  # ============================================================================
+  - ARK
+  - ORDI
+  - JTO
+  - JUP
+  - PYTH
+  - STRK
+  - GMT
+  - APE
+  - OP
+  - AVAX
+  - FTT
+  - CAKE
+  - BNT
+  - GAS
+  - LUNC
+  - kLUNC
+  - USTC
+  - LUNA
+
+  # ============================================================================
+  # TIER 9 - NICHE/SPECIALIZED TOKENS (Low-medium liquidity)
+  # ============================================================================
+  - PEOPLE
+  - ACE
+  - AERO
+  - ALT
+  - ANIME
+  - APEX
+  - AR
+  - ASTER
+  - AVNT
+  - BABY
+  - BADGER
+  - BANANA
+  - BLZ
+  - CC
+  - ENS
+  - FRIEND
+  - HEMI
+  - HPOS
+  - HYPER
+  - INIT
+  - IO
+  - IP
+  - JELLY
+  - KAITO
+  - KAS
+  - LAUNCHCOIN
+  - LAYER
+  - LISTA
+  - LOOM
+  - MAV
+  - MEGA
+  - MERL
+  - MET
+  - MNT
+  - MON
+  - NEIROETH
+  - kNEIRO
+  - NIL
+  - NXPC
+  - OGN
+  - OM
+  - ORBS
+  - OX
+  - PANDORA
+  - PAXG
+  - POLYX
+  - PROMPT
+  - PROVE
+  - PUMP
+  - PURR
+  - REQ
+  - RESOLV
+  - RLB
+  - RUNE
+  - S
+  - SCR
+  - SHIA
+  - SKY
+  - SOPH
+  - SPX
+  - STBL
+  - STG
+  - SUPER
+  - SYRUP
+  - TNSR
+  - TRB
+  - TST
+  - UNIBOT
+  - VINE
+  - VVV
+  - WCT
+  - WLFI
+  - XAI
+  - XPL
+  - YZY
+  - ZORA
+  - ZEREBRO
+
+  # ============================================================================
+  # TIER 10 - EXPERIMENTAL/LOW LIQUIDITY (High risk)
+  # ============================================================================
+  - 0G
+  - 2Z
+  - GRIFFAIN
+  - POL
