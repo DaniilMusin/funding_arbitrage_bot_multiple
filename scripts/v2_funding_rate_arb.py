@@ -66,6 +66,30 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Do you want to check the trade profitability condition to enter? (True/False): ",
             "prompt_on_new": True}
     )
+    max_slippage_pct: Decimal = Field(
+        default=0.005,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter the maximum allowed slippage percentage (e.g. 0.005 for 0.5%): ",
+            "prompt_on_new": False}
+    )
+    position_validation_enabled: bool = Field(
+        default=True,
+        json_schema_extra={
+            "prompt": lambda mi: "Enable position validation after opening? (True/False): ",
+            "prompt_on_new": False}
+    )
+    emergency_close_on_imbalance: bool = Field(
+        default=True,
+        json_schema_extra={
+            "prompt": lambda mi: "Enable emergency close if hedge is imbalanced? (True/False): ",
+            "prompt_on_new": False}
+    )
+    max_position_imbalance_pct: Decimal = Field(
+        default=0.10,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter max position imbalance percentage before emergency close (e.g. 0.10 for 10%): ",
+            "prompt_on_new": False}
+    )
 
     @field_validator("connectors", "tokens", mode="before")
     @classmethod
@@ -131,6 +155,140 @@ class FundingRateArbitrage(StrategyV2Base):
             connectors.add(info["connector_1"])
             connectors.add(info["connector_2"])
         return connectors
+
+    def validate_sufficient_balance(self, connector_1: str, connector_2: str, position_size_quote: Decimal) -> tuple[bool, str]:
+        """
+        Validate that both connectors have sufficient balance for the position.
+        Returns (is_valid, error_message)
+        """
+        quote_1 = self.quote_markets_map.get(connector_1, "USDT")
+        quote_2 = self.quote_markets_map.get(connector_2, "USDT")
+
+        balance_1 = self.connectors[connector_1].get_available_balance(quote_1)
+        balance_2 = self.connectors[connector_2].get_available_balance(quote_2)
+
+        # Required margin = position_size / leverage
+        required_margin = position_size_quote / self.config.leverage
+
+        # Add 10% buffer for fees and safety
+        required_margin_with_buffer = required_margin * Decimal("1.10")
+
+        if balance_1 < required_margin_with_buffer:
+            return False, f"{connector_1} insufficient balance: {balance_1} < {required_margin_with_buffer} required"
+
+        if balance_2 < required_margin_with_buffer:
+            return False, f"{connector_2} insufficient balance: {balance_2} < {required_margin_with_buffer} required"
+
+        return True, ""
+
+    def check_slippage(self, token: str, connector_1: str, connector_2: str,
+                      expected_price_1: Decimal, expected_price_2: Decimal,
+                      quote_volume: Decimal) -> tuple[bool, str]:
+        """
+        Check if current market prices are within acceptable slippage range.
+        Returns (is_acceptable, warning_message)
+        """
+        trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
+        trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+
+        # Get current market prices
+        current_price_1 = Decimal(self.market_data_provider.get_price_by_type(
+            connector_name=connector_1,
+            trading_pair=trading_pair_1,
+            price_type=PriceType.MidPrice
+        ))
+        current_price_2 = Decimal(self.market_data_provider.get_price_by_type(
+            connector_name=connector_2,
+            trading_pair=trading_pair_2,
+            price_type=PriceType.MidPrice
+        ))
+
+        # Calculate slippage
+        slippage_1 = abs(current_price_1 - expected_price_1) / expected_price_1
+        slippage_2 = abs(current_price_2 - expected_price_2) / expected_price_2
+
+        max_slippage = max(slippage_1, slippage_2)
+
+        if max_slippage > self.config.max_slippage_pct:
+            return False, f"Slippage too high: {max_slippage:.4%} > {self.config.max_slippage_pct:.4%} (C1: {slippage_1:.4%}, C2: {slippage_2:.4%})"
+
+        if max_slippage > self.config.max_slippage_pct * Decimal("0.5"):
+            return True, f"Warning: Slippage {max_slippage:.4%} (C1: {slippage_1:.4%}, C2: {slippage_2:.4%})"
+
+        return True, ""
+
+    def validate_position_hedge(self, token: str) -> tuple[bool, str]:
+        """
+        Validate that positions are properly hedged (equal notional values).
+        Returns (is_hedged, message)
+        """
+        if token not in self.active_funding_arbitrages:
+            return True, "No active position"
+
+        arbitrage_info = self.active_funding_arbitrages[token]
+        connector_1 = arbitrage_info["connector_1"]
+        connector_2 = arbitrage_info["connector_2"]
+
+        # Get executors
+        executors = self.filter_executors(
+            executors=self.get_all_executors(),
+            filter_func=lambda x: x.id in arbitrage_info["executors_ids"]
+        )
+
+        if len(executors) != 2:
+            return False, f"Expected 2 executors, found {len(executors)}"
+
+        # Find which executor belongs to which connector
+        executor_1 = None
+        executor_2 = None
+        for executor in executors:
+            if executor.connector_name == connector_1:
+                executor_1 = executor
+            elif executor.connector_name == connector_2:
+                executor_2 = executor
+
+        if executor_1 is None or executor_2 is None:
+            return False, f"Could not find executors for both connectors"
+
+        # Check if both positions are filled
+        if executor_1.filled_amount <= 0:
+            return False, f"{connector_1} position not filled: {executor_1.filled_amount}"
+
+        if executor_2.filled_amount <= 0:
+            return False, f"{connector_2} position not filled: {executor_2.filled_amount}"
+
+        # Get current prices
+        trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
+        trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+
+        price_1 = Decimal(self.market_data_provider.get_price_by_type(
+            connector_name=connector_1,
+            trading_pair=trading_pair_1,
+            price_type=PriceType.MidPrice
+        ))
+        price_2 = Decimal(self.market_data_provider.get_price_by_type(
+            connector_name=connector_2,
+            trading_pair=trading_pair_2,
+            price_type=PriceType.MidPrice
+        ))
+
+        # Calculate notional values
+        notional_1 = abs(executor_1.filled_amount) * price_1
+        notional_2 = abs(executor_2.filled_amount) * price_2
+
+        # Check imbalance
+        if notional_1 == 0 or notional_2 == 0:
+            return False, f"Zero notional value detected: {notional_1}, {notional_2}"
+
+        imbalance = abs(notional_1 - notional_2) / max(notional_1, notional_2)
+
+        if imbalance > self.config.max_position_imbalance_pct:
+            return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (N1: ${notional_1:.2f}, N2: ${notional_2:.2f})"
+
+        if imbalance > self.config.max_position_imbalance_pct * Decimal("0.5"):
+            return True, f"Warning: Position imbalance {imbalance:.2%} (N1: ${notional_1:.2f}, N2: ${notional_2:.2f})"
+
+        return True, f"Hedge OK: imbalance {imbalance:.2%}"
 
     def get_position_size_quote(self, connector_1: str, connector_2: str) -> Decimal:
         """
@@ -296,10 +454,37 @@ class FundingRateArbitrage(StrategyV2Base):
                 if expected_profitability >= self.config.min_funding_rate_profitability:
                     position_size_quote = self.get_position_size_quote(connector_1, connector_2)
                     if position_size_quote <= 0:
+                        self.logger().warning(f"Skipping {token}: position_size_quote is zero or negative")
                         continue
+
+                    # SAFETY CHECK 1: Validate sufficient balance
+                    balance_valid, balance_msg = self.validate_sufficient_balance(connector_1, connector_2, position_size_quote)
+                    if not balance_valid:
+                        self.logger().warning(f"Skipping {token}: {balance_msg}")
+                        continue
+
                     current_profitability = self.get_current_profitability_after_fees(
                         token, connector_1, connector_2, trade_side, position_size_quote
                     )
+
+                    # SAFETY CHECK 2: Slippage protection
+                    trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
+                    trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+                    expected_price_1 = Decimal(self.market_data_provider.get_price_by_type(
+                        connector_name=connector_1, trading_pair=trading_pair_1, price_type=PriceType.MidPrice
+                    ))
+                    expected_price_2 = Decimal(self.market_data_provider.get_price_by_type(
+                        connector_name=connector_2, trading_pair=trading_pair_2, price_type=PriceType.MidPrice
+                    ))
+
+                    slippage_ok, slippage_msg = self.check_slippage(
+                        token, connector_1, connector_2, expected_price_1, expected_price_2, position_size_quote
+                    )
+                    if not slippage_ok:
+                        self.logger().warning(f"Skipping {token}: {slippage_msg}")
+                        continue
+                    elif slippage_msg:
+                        self.logger().info(f"{token}: {slippage_msg}")
                     if self.config.trade_profitability_condition_to_enter:
                         if current_profitability < 0:
                             self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
@@ -337,10 +522,37 @@ class FundingRateArbitrage(StrategyV2Base):
         Once the funding rate arbitrage is created we are going to control the funding payments pnl and the current
         pnl of each of the executors at the cost of closing the open position at market.
         If that PNL is greater than the profitability_to_take_profit
+
+        SAFETY: Also monitors position hedge and triggers emergency close if imbalanced.
         """
         stop_executor_actions = []
         tokens_to_remove = []
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
+            # SAFETY CHECK: Validate position hedge (continuous monitoring)
+            if self.config.position_validation_enabled:
+                is_hedged, hedge_msg = self.validate_position_hedge(token)
+                if not is_hedged:
+                    if self.config.emergency_close_on_imbalance:
+                        self.logger().error(f"EMERGENCY CLOSE for {token}: {hedge_msg}")
+                        executors = self.filter_executors(
+                            executors=self.get_all_executors(),
+                            filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
+                        )
+                        self.stopped_funding_arbitrages[token].append({
+                            **funding_arbitrage_info,
+                            "close_reason": f"EMERGENCY: {hedge_msg}"
+                        })
+                        if len(self.stopped_funding_arbitrages[token]) > 10:
+                            self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
+                        stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                        tokens_to_remove.append(token)
+                        continue
+                    else:
+                        self.logger().warning(f"Position hedge warning for {token}: {hedge_msg}")
+                elif "Warning" in hedge_msg:
+                    self.logger().warning(f"{token}: {hedge_msg}")
+                else:
+                    self.logger().debug(f"{token}: {hedge_msg}")
             executors = self.filter_executors(
                 executors=self.get_all_executors(),
                 filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]

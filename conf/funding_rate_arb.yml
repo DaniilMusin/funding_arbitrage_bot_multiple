@@ -1,6 +1,15 @@
 min_funding_rate_profitability: 0.0015  # 0.15% daily spread minimum (balanced strategy)
 position_size_quote: 100
 leverage: 5
+
+# ============================================================================
+# SAFETY PARAMETERS (Financial protection mechanisms)
+# ============================================================================
+max_slippage_pct: 0.005                # 0.5% max slippage (blocks entry if price moved too much)
+position_validation_enabled: true       # Enable continuous hedge validation (CRITICAL - never disable!)
+emergency_close_on_imbalance: true     # Auto-close if hedge imbalanced (CRITICAL - never disable!)
+max_position_imbalance_pct: 0.10       # 10% max notional imbalance before emergency close
+
 connectors:
   - okx_perpetual
   - hyperliquid_perpetual
