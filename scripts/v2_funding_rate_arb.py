@@ -32,9 +32,9 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt_on_new": True}
     )
     connectors: Set[str] = Field(
-        default="okx_perpetual,bybit_perpetual,bing_x,hyperliquid_perpetual",
+        default="okx_perpetual,bybit_perpetual,hyperliquid_perpetual",
         json_schema_extra={
-            "prompt": lambda mi: "Enter the connectors separated by commas (e.g. okx_perpetual,bybit_perpetual,bing_x,hyperliquid_perpetual): ",
+            "prompt": lambda mi: "Enter the connectors separated by commas (e.g. okx_perpetual,bybit_perpetual,hyperliquid_perpetual): ",
             "prompt_on_new": True}
     )
     tokens: Set[str] = Field(
@@ -81,13 +81,11 @@ class FundingRateArbitrage(StrategyV2Base):
         "binance_perpetual": "USDT",
         "bybit_perpetual": "USDT",
         "okx_perpetual": "USDT",
-        "bing_x": "USDT",
     }
     funding_payment_interval_map = {
         "binance_perpetual": 60 * 60 * 8,
         "bybit_perpetual": 60 * 60 * 8,
         "okx_perpetual": 60 * 60 * 8,
-        "bing_x": 60 * 60 * 8,
         "hyperliquid_perpetual": 60 * 60 * 1,
     }
     funding_profitability_interval = 60 * 60 * 24
@@ -178,7 +176,7 @@ class FundingRateArbitrage(StrategyV2Base):
             base_currency=trading_pair_1.split("-")[0],
             quote_currency=trading_pair_1.split("-")[1],
             order_type=OrderType.MARKET,
-            order_side=TradeType.BUY,
+            order_side=side,
             amount=quote_volume / connector_1_price,
             price=connector_1_price,
             is_maker=False,
@@ -188,7 +186,7 @@ class FundingRateArbitrage(StrategyV2Base):
             base_currency=trading_pair_2.split("-")[0],
             quote_currency=trading_pair_2.split("-")[1],
             order_type=OrderType.MARKET,
-            order_side=TradeType.BUY,
+            order_side=TradeType.BUY if side != TradeType.BUY else TradeType.SELL,
             amount=quote_volume / connector_2_price,
             price=connector_2_price,
             is_maker=False,
@@ -315,19 +313,28 @@ class FundingRateArbitrage(StrategyV2Base):
             self.active_funding_arbitrages[token]["funding_payments"].append(funding_payment_completed_event)
 
     def get_position_executors_config(self, token, connector_1, connector_2, trade_side, position_size_quote: Decimal):
-        price = self.market_data_provider.get_price_by_type(
+        # Get price for connector_1
+        price_1 = self.market_data_provider.get_price_by_type(
             connector_name=connector_1,
             trading_pair=self.get_trading_pair_for_connector(token, connector_1),
             price_type=PriceType.MidPrice
         )
-        position_amount = position_size_quote / price
+        position_amount_1 = position_size_quote / price_1
+
+        # Get price for connector_2 to ensure perfect hedge by notional value
+        price_2 = self.market_data_provider.get_price_by_type(
+            connector_name=connector_2,
+            trading_pair=self.get_trading_pair_for_connector(token, connector_2),
+            price_type=PriceType.MidPrice
+        )
+        position_amount_2 = position_size_quote / price_2
 
         position_executor_config_1 = PositionExecutorConfig(
             timestamp=self.current_timestamp,
             connector_name=connector_1,
             trading_pair=self.get_trading_pair_for_connector(token, connector_1),
             side=trade_side,
-            amount=position_amount,
+            amount=position_amount_1,
             leverage=self.config.leverage,
             triple_barrier_config=TripleBarrierConfig(open_order_type=OrderType.MARKET),
         )
@@ -336,7 +343,7 @@ class FundingRateArbitrage(StrategyV2Base):
             connector_name=connector_2,
             trading_pair=self.get_trading_pair_for_connector(token, connector_2),
             side=TradeType.BUY if trade_side == TradeType.SELL else TradeType.SELL,
-            amount=position_amount,
+            amount=position_amount_2,
             leverage=self.config.leverage,
             triple_barrier_config=TripleBarrierConfig(open_order_type=OrderType.MARKET),
         )
@@ -361,8 +368,13 @@ class FundingRateArbitrage(StrategyV2Base):
                 best_paths_info["Best Path"] = f"{connector_1}_{connector_2}"
                 best_paths_info["Best Rate Diff (%)"] = funding_rate_diff * 100
                 best_paths_info["Trade Profitability (%)"] = profitability_after_fees * 100
-                best_paths_info["Days Trade Prof"] = - profitability_after_fees / funding_rate_diff
-                best_paths_info["Days to TP"] = (self.config.profitability_to_take_profit - profitability_after_fees) / funding_rate_diff
+                # Protect against division by zero
+                if funding_rate_diff > Decimal("0.0001"):
+                    best_paths_info["Days Trade Prof"] = - profitability_after_fees / funding_rate_diff
+                    best_paths_info["Days to TP"] = (self.config.profitability_to_take_profit - profitability_after_fees) / funding_rate_diff
+                else:
+                    best_paths_info["Days Trade Prof"] = float('inf')
+                    best_paths_info["Days to TP"] = float('inf')
 
                 time_to_next_funding_info_c1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
                 time_to_next_funding_info_c2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
