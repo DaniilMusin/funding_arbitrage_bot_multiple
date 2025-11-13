@@ -174,16 +174,142 @@ class FundingRateArbitrage(StrategyV2Base):
             connectors.add(info["connector_2"])
         return connectors
 
+    # ========================================
+    # SAFE API WRAPPERS (Bug fixes #1-10)
+    # ========================================
+
+    def safe_get_price(self, connector_name: str, trading_pair: str, price_type=PriceType.MidPrice) -> Decimal | None:
+        """
+        Safe wrapper for get_price_by_type with error handling.
+        Returns None if price unavailable instead of crashing.
+        """
+        try:
+            price = self.market_data_provider.get_price_by_type(
+                connector_name=connector_name,
+                trading_pair=trading_pair,
+                price_type=price_type
+            )
+            if price is None:
+                self.logger().warning(f"Price is None for {connector_name} {trading_pair}")
+                return None
+            return Decimal(str(price))
+        except (TypeError, ValueError, AttributeError) as e:
+            self.logger().error(f"Error getting price for {connector_name} {trading_pair}: {e}")
+            return None
+        except Exception as e:
+            self.logger().error(f"Unexpected error getting price for {connector_name} {trading_pair}: {e}")
+            return None
+
+    def safe_get_price_for_volume(self, connector_name: str, trading_pair: str, quote_volume: Decimal, is_buy: bool) -> Decimal | None:
+        """Safe wrapper for get_price_for_quote_volume with error handling."""
+        try:
+            result = self.market_data_provider.get_price_for_quote_volume(
+                connector_name=connector_name,
+                trading_pair=trading_pair,
+                quote_volume=quote_volume,
+                is_buy=is_buy
+            )
+            if result is None or result.result_price is None:
+                self.logger().warning(f"Price for volume is None for {connector_name} {trading_pair}")
+                return None
+            return Decimal(str(result.result_price))
+        except (TypeError, ValueError, AttributeError) as e:
+            self.logger().error(f"Error getting price for volume {connector_name} {trading_pair}: {e}")
+            return None
+        except Exception as e:
+            self.logger().error(f"Unexpected error getting price for volume {connector_name} {trading_pair}: {e}")
+            return None
+
+    def safe_get_balance(self, connector_name: str, currency: str) -> Decimal | None:
+        """Safe wrapper for get_available_balance with error handling."""
+        try:
+            connector = self.connectors.get(connector_name)
+            if connector is None:
+                self.logger().error(f"Connector {connector_name} not available")
+                return None
+            balance = connector.get_available_balance(currency)
+            if balance is None:
+                self.logger().warning(f"Balance is None for {connector_name} {currency}")
+                return Decimal("0")
+            return Decimal(str(balance))
+        except (TypeError, ValueError, AttributeError, KeyError) as e:
+            self.logger().error(f"Error getting balance for {connector_name} {currency}: {e}")
+            return None
+        except Exception as e:
+            self.logger().error(f"Unexpected error getting balance for {connector_name} {currency}: {e}")
+            return None
+
+    def safe_get_fee(self, connector_name: str, base_currency: str, quote_currency: str,
+                    order_type: OrderType, order_side: TradeType, amount: Decimal,
+                    price: Decimal, is_maker: bool, position_action: PositionAction) -> Decimal | None:
+        """Safe wrapper for get_fee with error handling."""
+        try:
+            connector = self.connectors.get(connector_name)
+            if connector is None:
+                self.logger().error(f"Connector {connector_name} not available")
+                return None
+            fee_obj = connector.get_fee(
+                base_currency=base_currency,
+                quote_currency=quote_currency,
+                order_type=order_type,
+                order_side=order_side,
+                amount=amount,
+                price=price,
+                is_maker=is_maker,
+                position_action=position_action
+            )
+            if fee_obj is None or fee_obj.percent is None:
+                self.logger().warning(f"Fee is None for {connector_name}")
+                # Return conservative estimate: 0.1% (typical taker fee)
+                return Decimal("0.001")
+            return Decimal(str(fee_obj.percent))
+        except (TypeError, ValueError, AttributeError, KeyError) as e:
+            self.logger().error(f"Error getting fee for {connector_name}: {e}")
+            return Decimal("0.001")  # Fallback to conservative estimate
+        except Exception as e:
+            self.logger().error(f"Unexpected error getting fee for {connector_name}: {e}")
+            return Decimal("0.001")
+
+    def safe_split_trading_pair(self, trading_pair: str) -> tuple[str, str] | None:
+        """
+        Safely split trading pair into base and quote currencies.
+        Handles multiple formats: BTC-USDT, BTC/USDT, BTCUSDT.
+        """
+        try:
+            # Try different separators
+            for sep in ["-", "/", "_"]:
+                if sep in trading_pair:
+                    parts = trading_pair.split(sep)
+                    if len(parts) == 2:
+                        return parts[0], parts[1]
+
+            # If no separator found, log warning
+            self.logger().error(f"Cannot split trading_pair: {trading_pair} (no separator found)")
+            return None
+        except Exception as e:
+            self.logger().error(f"Error splitting trading_pair {trading_pair}: {e}")
+            return None
+
     def validate_sufficient_balance(self, connector_1: str, connector_2: str, position_size_quote: Decimal) -> tuple[bool, str]:
         """
         Validate that both connectors have sufficient balance for the position.
         Returns (is_valid, error_message)
         """
+        # BUG FIX #12: Check leverage before division
+        if self.config.leverage <= 0:
+            return False, f"Invalid leverage: {self.config.leverage}"
+
         quote_1 = self.quote_markets_map.get(connector_1, "USDT")
         quote_2 = self.quote_markets_map.get(connector_2, "USDT")
 
-        balance_1 = self.connectors[connector_1].get_available_balance(quote_1)
-        balance_2 = self.connectors[connector_2].get_available_balance(quote_2)
+        # BUG FIX #3: Use safe_get_balance instead of direct call
+        balance_1 = self.safe_get_balance(connector_1, quote_1)
+        balance_2 = self.safe_get_balance(connector_2, quote_2)
+
+        if balance_1 is None:
+            return False, f"{connector_1} balance unavailable"
+        if balance_2 is None:
+            return False, f"{connector_2} balance unavailable"
 
         # Required margin = position_size / leverage
         required_margin = position_size_quote / self.config.leverage
@@ -209,17 +335,18 @@ class FundingRateArbitrage(StrategyV2Base):
         trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
         trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
 
-        # Get current market prices
-        current_price_1 = Decimal(self.market_data_provider.get_price_by_type(
-            connector_name=connector_1,
-            trading_pair=trading_pair_1,
-            price_type=PriceType.MidPrice
-        ))
-        current_price_2 = Decimal(self.market_data_provider.get_price_by_type(
-            connector_name=connector_2,
-            trading_pair=trading_pair_2,
-            price_type=PriceType.MidPrice
-        ))
+        # BUG FIX #1: Use safe_get_price instead of direct call
+        current_price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
+        current_price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
+
+        if current_price_1 is None:
+            return False, f"Price unavailable for {connector_1} {trading_pair_1}"
+        if current_price_2 is None:
+            return False, f"Price unavailable for {connector_2} {trading_pair_2}"
+
+        # Protect against zero prices
+        if expected_price_1 <= 0 or expected_price_2 <= 0:
+            return False, f"Invalid expected prices: {expected_price_1}, {expected_price_2}"
 
         # Calculate slippage
         slippage_1 = abs(current_price_1 - expected_price_1) / expected_price_1
@@ -268,27 +395,25 @@ class FundingRateArbitrage(StrategyV2Base):
         if executor_1 is None or executor_2 is None:
             return False, f"Could not find executors for both connectors"
 
-        # Check if both positions are filled
-        if executor_1.filled_amount <= 0:
+        # BUG FIX #7: Check if filled_amount is None before comparison
+        if executor_1.filled_amount is None or executor_1.filled_amount <= 0:
             return False, f"{connector_1} position not filled: {executor_1.filled_amount}"
 
-        if executor_2.filled_amount <= 0:
+        if executor_2.filled_amount is None or executor_2.filled_amount <= 0:
             return False, f"{connector_2} position not filled: {executor_2.filled_amount}"
 
         # Get current prices
         trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
         trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
 
-        price_1 = Decimal(self.market_data_provider.get_price_by_type(
-            connector_name=connector_1,
-            trading_pair=trading_pair_1,
-            price_type=PriceType.MidPrice
-        ))
-        price_2 = Decimal(self.market_data_provider.get_price_by_type(
-            connector_name=connector_2,
-            trading_pair=trading_pair_2,
-            price_type=PriceType.MidPrice
-        ))
+        # BUG FIX #1: Use safe_get_price instead of direct call
+        price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
+        price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
+
+        if price_1 is None:
+            return False, f"Price unavailable for {connector_1} {trading_pair_1}"
+        if price_2 is None:
+            return False, f"Price unavailable for {connector_2} {trading_pair_2}"
 
         # Calculate notional values
         notional_1 = abs(executor_1.filled_amount) * price_1
@@ -314,10 +439,21 @@ class FundingRateArbitrage(StrategyV2Base):
         Note: position_size_quote is the notional value WITHOUT leverage, so we need to ensure
         we have enough margin (notional / leverage) available.
         """
+        # BUG FIX #12: Check leverage before calculation
+        if self.config.leverage <= 0:
+            self.logger().error(f"Invalid leverage: {self.config.leverage}")
+            return Decimal("0")
+
         quote_1 = self.quote_markets_map.get(connector_1, "USDT")
         quote_2 = self.quote_markets_map.get(connector_2, "USDT")
-        balance_1 = self.connectors[connector_1].get_available_balance(quote_1)
-        balance_2 = self.connectors[connector_2].get_available_balance(quote_2)
+
+        # BUG FIX #3: Use safe_get_balance instead of direct call
+        balance_1 = self.safe_get_balance(connector_1, quote_1)
+        balance_2 = self.safe_get_balance(connector_2, quote_2)
+
+        if balance_1 is None or balance_2 is None:
+            self.logger().warning(f"Balance unavailable for {connector_1} or {connector_2}")
+            return Decimal("0")
 
         # Calculate maximum position size based on available balance and leverage
         # For perpetuals: required_margin = notional_value / leverage
@@ -360,62 +496,63 @@ class FundingRateArbitrage(StrategyV2Base):
         trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
         trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
 
-        connector_1_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
-            connector_name=connector_1,
-            trading_pair=trading_pair_1,
-            quote_volume=quote_volume,
-            is_buy=side == TradeType.BUY,
-        ).result_price)
-        connector_2_price = Decimal(self.market_data_provider.get_price_for_quote_volume(
-            connector_name=connector_2,
-            trading_pair=trading_pair_2,
-            quote_volume=quote_volume,
-            is_buy=side != TradeType.BUY,
-        ).result_price)
+        # BUG FIX #2: Use safe_get_price_for_volume instead of direct call
+        connector_1_price = self.safe_get_price_for_volume(
+            connector_1, trading_pair_1, quote_volume, is_buy=(side == TradeType.BUY)
+        )
+        connector_2_price = self.safe_get_price_for_volume(
+            connector_2, trading_pair_2, quote_volume, is_buy=(side != TradeType.BUY)
+        )
+
+        if connector_1_price is None or connector_2_price is None:
+            self.logger().error(f"Price unavailable for profitability calculation: {connector_1} or {connector_2}")
+            return Decimal("-999")  # Return very negative value to skip this opportunity
+
+        # BUG FIX #6: Use safe_split_trading_pair instead of direct split
+        pair_1_parts = self.safe_split_trading_pair(trading_pair_1)
+        pair_2_parts = self.safe_split_trading_pair(trading_pair_2)
+
+        if pair_1_parts is None or pair_2_parts is None:
+            self.logger().error(f"Cannot split trading pairs: {trading_pair_1} or {trading_pair_2}")
+            return Decimal("-999")
+
+        base_1, quote_1 = pair_1_parts
+        base_2, quote_2 = pair_2_parts
+
+        # Protect against zero prices
+        if connector_1_price <= 0 or connector_2_price <= 0:
+            self.logger().error(f"Invalid prices: {connector_1_price}, {connector_2_price}")
+            return Decimal("-999")
 
         # Calculate fees for OPENING positions
-        estimated_fees_open_connector_1 = self.connectors[connector_1].get_fee(
-            base_currency=trading_pair_1.split("-")[0],
-            quote_currency=trading_pair_1.split("-")[1],
-            order_type=OrderType.MARKET,
-            order_side=side,
-            amount=quote_volume / connector_1_price,
-            price=connector_1_price,
-            is_maker=False,
-            position_action=PositionAction.OPEN
-        ).percent
-        estimated_fees_open_connector_2 = self.connectors[connector_2].get_fee(
-            base_currency=trading_pair_2.split("-")[0],
-            quote_currency=trading_pair_2.split("-")[1],
-            order_type=OrderType.MARKET,
-            order_side=TradeType.BUY if side != TradeType.BUY else TradeType.SELL,
-            amount=quote_volume / connector_2_price,
-            price=connector_2_price,
-            is_maker=False,
-            position_action=PositionAction.OPEN
-        ).percent
+        # BUG FIX #4: Use safe_get_fee instead of direct call
+        estimated_fees_open_connector_1 = self.safe_get_fee(
+            connector_1, base_1, quote_1,
+            OrderType.MARKET, side, quote_volume / connector_1_price,
+            connector_1_price, False, PositionAction.OPEN
+        )
+        estimated_fees_open_connector_2 = self.safe_get_fee(
+            connector_2, base_2, quote_2,
+            OrderType.MARKET, TradeType.BUY if side != TradeType.BUY else TradeType.SELL,
+            quote_volume / connector_2_price, connector_2_price, False, PositionAction.OPEN
+        )
 
         # Calculate fees for CLOSING positions (opposite sides)
-        estimated_fees_close_connector_1 = self.connectors[connector_1].get_fee(
-            base_currency=trading_pair_1.split("-")[0],
-            quote_currency=trading_pair_1.split("-")[1],
-            order_type=OrderType.MARKET,
-            order_side=TradeType.BUY if side != TradeType.BUY else TradeType.SELL,  # Opposite side
-            amount=quote_volume / connector_1_price,
-            price=connector_1_price,
-            is_maker=False,
-            position_action=PositionAction.CLOSE
-        ).percent
-        estimated_fees_close_connector_2 = self.connectors[connector_2].get_fee(
-            base_currency=trading_pair_2.split("-")[0],
-            quote_currency=trading_pair_2.split("-")[1],
-            order_type=OrderType.MARKET,
-            order_side=side,  # Opposite side of opening
-            amount=quote_volume / connector_2_price,
-            price=connector_2_price,
-            is_maker=False,
-            position_action=PositionAction.CLOSE
-        ).percent
+        estimated_fees_close_connector_1 = self.safe_get_fee(
+            connector_1, base_1, quote_1,
+            OrderType.MARKET, TradeType.BUY if side != TradeType.BUY else TradeType.SELL,
+            quote_volume / connector_1_price, connector_1_price, False, PositionAction.CLOSE
+        )
+        estimated_fees_close_connector_2 = self.safe_get_fee(
+            connector_2, base_2, quote_2,
+            OrderType.MARKET, side,  # BUG FIX #15: Closes the opposite position opened on connector_2
+            quote_volume / connector_2_price, connector_2_price, False, PositionAction.CLOSE
+        )
+
+        if None in [estimated_fees_open_connector_1, estimated_fees_open_connector_2,
+                   estimated_fees_close_connector_1, estimated_fees_close_connector_2]:
+            self.logger().error(f"Fee calculation failed for {connector_1} or {connector_2}")
+            return Decimal("-999")
 
         # Total fees = open + close for both connectors
         total_fees = (estimated_fees_open_connector_1 + estimated_fees_close_connector_1 +
@@ -443,7 +580,25 @@ class FundingRateArbitrage(StrategyV2Base):
         return best_combination
 
     def get_normalized_funding_rate_in_seconds(self, funding_info_report, connector_name):
-        return funding_info_report[connector_name].rate / self.funding_payment_interval_map.get(connector_name, 60 * 60 * 8)
+        """
+        BUG FIX #13: Safe access to funding_info_report with validation.
+        """
+        # Check if connector exists in report
+        if connector_name not in funding_info_report:
+            self.logger().warning(f"Connector {connector_name} not in funding_info_report")
+            return Decimal("0")
+
+        funding_info = funding_info_report[connector_name]
+        if funding_info is None or funding_info.rate is None:
+            self.logger().warning(f"Funding info or rate is None for {connector_name}")
+            return Decimal("0")
+
+        interval = self.funding_payment_interval_map.get(connector_name, 60 * 60 * 8)
+        if interval <= 0:
+            self.logger().error(f"Invalid funding payment interval for {connector_name}: {interval}")
+            return Decimal("0")
+
+        return Decimal(str(funding_info.rate)) / Decimal(str(interval))
 
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         """
@@ -516,6 +671,12 @@ class FundingRateArbitrage(StrategyV2Base):
                                        f"Starting executors...")
                     position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(
                         token, connector_1, connector_2, trade_side, position_size_quote)
+
+                    # Check if configs were created successfully
+                    if position_executor_config_1 is None or position_executor_config_2 is None:
+                        self.logger().error(f"Failed to create executor configs for {token}, skipping")
+                        continue
+
                     self.active_funding_arbitrages[token] = {
                         "connector_1": connector_1,
                         "connector_2": connector_2,
@@ -575,10 +736,27 @@ class FundingRateArbitrage(StrategyV2Base):
                 executors=self.get_all_executors(),
                 filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
             )
-            funding_payments_pnl = sum(funding_payment.amount for funding_payment in funding_arbitrage_info["funding_payments"])
-            executors_pnl = sum(executor.net_pnl_quote for executor in executors)
+
+            # BUG FIX #9: Check if funding_payment.amount is None
+            funding_payments_pnl = sum(
+                funding_payment.amount if funding_payment.amount is not None else Decimal("0")
+                for funding_payment in funding_arbitrage_info["funding_payments"]
+            )
+
+            # BUG FIX #8: Check if executor.net_pnl_quote is None
+            executors_pnl = sum(
+                executor.net_pnl_quote if executor.net_pnl_quote is not None else Decimal("0")
+                for executor in executors
+            )
+
+            # BUG FIX #11: Don't use default 0 for position_size_quote - it's dangerous!
+            position_size = funding_arbitrage_info.get("position_size_quote")
+            if position_size is None or position_size <= 0:
+                self.logger().error(f"Invalid position_size_quote for {token}: {position_size}")
+                continue
+
             take_profit_condition = executors_pnl + funding_payments_pnl > (
-                self.config.profitability_to_take_profit * funding_arbitrage_info.get("position_size_quote", 0))
+                self.config.profitability_to_take_profit * position_size)
 
             # Get funding info and check if connectors are available
             funding_info_report = self.get_funding_info_by_token(token)
@@ -626,7 +804,13 @@ class FundingRateArbitrage(StrategyV2Base):
 
         Note: We keep only the last 100 funding payments to prevent memory leak.
         """
-        token = funding_payment_completed_event.trading_pair.split("-")[0]
+        # BUG FIX #6: Use safe_split_trading_pair instead of direct split
+        pair_parts = self.safe_split_trading_pair(funding_payment_completed_event.trading_pair)
+        if pair_parts is None:
+            self.logger().warning(f"Cannot parse trading_pair from funding payment event: {funding_payment_completed_event.trading_pair}")
+            return
+
+        token = pair_parts[0]
         if token in self.active_funding_arbitrages:
             self.active_funding_arbitrages[token]["funding_payments"].append(funding_payment_completed_event)
             # Prevent memory leak: keep only last 100 payments (enough for ~4 days on Hyperliquid, ~33 days on OKX)
@@ -634,20 +818,23 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.active_funding_arbitrages[token]["funding_payments"] = self.active_funding_arbitrages[token]["funding_payments"][-100:]
 
     def get_position_executors_config(self, token, connector_1, connector_2, trade_side, position_size_quote: Decimal):
-        # Get price for connector_1
-        price_1 = self.market_data_provider.get_price_by_type(
-            connector_name=connector_1,
-            trading_pair=self.get_trading_pair_for_connector(token, connector_1),
-            price_type=PriceType.MidPrice
-        )
-        position_amount_1 = position_size_quote / price_1
+        # BUG FIX #1: Use safe_get_price instead of direct call
+        trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
+        trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
 
-        # Get price for connector_2 to ensure perfect hedge by notional value
-        price_2 = self.market_data_provider.get_price_by_type(
-            connector_name=connector_2,
-            trading_pair=self.get_trading_pair_for_connector(token, connector_2),
-            price_type=PriceType.MidPrice
-        )
+        price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
+        price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
+
+        if price_1 is None or price_2 is None:
+            self.logger().error(f"Price unavailable for {token} on {connector_1} or {connector_2}")
+            # Return fallback configs with zero amounts (will be rejected later)
+            return None, None
+
+        if price_1 <= 0 or price_2 <= 0:
+            self.logger().error(f"Invalid prices for {token}: {price_1}, {price_2}")
+            return None, None
+
+        position_amount_1 = position_size_quote / price_1
         position_amount_2 = position_size_quote / price_2
 
         position_executor_config_1 = PositionExecutorConfig(
@@ -718,18 +905,44 @@ class FundingRateArbitrage(StrategyV2Base):
                     best_paths_info["Days Trade Prof"] = float('inf')
                     best_paths_info["Days to TP"] = float('inf')
 
-                time_to_next_funding_info_c1 = funding_info_report[connector_1].next_funding_utc_timestamp - self.current_timestamp
-                time_to_next_funding_info_c2 = funding_info_report[connector_2].next_funding_utc_timestamp - self.current_timestamp
-                best_paths_info["Min to Funding 1"] = time_to_next_funding_info_c1 / 60
-                best_paths_info["Min to Funding 2"] = time_to_next_funding_info_c2 / 60
+                # BUG FIX #10: Check if timestamp is None before operations
+                try:
+                    next_funding_c1 = funding_info_report[connector_1].next_funding_utc_timestamp
+                    next_funding_c2 = funding_info_report[connector_2].next_funding_utc_timestamp
+
+                    if next_funding_c1 is not None and self.current_timestamp is not None:
+                        time_to_next_funding_info_c1 = next_funding_c1 - self.current_timestamp
+                        best_paths_info["Min to Funding 1"] = time_to_next_funding_info_c1 / 60
+                    else:
+                        best_paths_info["Min to Funding 1"] = float('inf')
+
+                    if next_funding_c2 is not None and self.current_timestamp is not None:
+                        time_to_next_funding_info_c2 = next_funding_c2 - self.current_timestamp
+                        best_paths_info["Min to Funding 2"] = time_to_next_funding_info_c2 / 60
+                    else:
+                        best_paths_info["Min to Funding 2"] = float('inf')
+                except (TypeError, AttributeError) as e:
+                    self.logger().warning(f"Error calculating time to next funding for {token}: {e}")
+                    best_paths_info["Min to Funding 1"] = float('inf')
+                    best_paths_info["Min to Funding 2"] = float('inf')
 
                 all_funding_info.append(token_info)
                 all_best_paths.append(best_paths_info)
+
             funding_rate_status.append(f"\n\n\nMin Funding Rate Profitability: {self.config.min_funding_rate_profitability:.2%}")
             funding_rate_status.append(f"Profitability to Take Profit: {self.config.profitability_to_take_profit:.2%}\n")
             funding_rate_status.append("Funding Rate Info (Funding Profitability in Days): ")
-            funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format="psql",))
-            funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format="psql",))
+
+            # BUG FIX #14: Check if lists are not empty before creating DataFrames
+            if all_funding_info:
+                funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_funding_info), table_format="psql",))
+            else:
+                funding_rate_status.append("No funding info available")
+
+            if all_best_paths:
+                funding_rate_status.append(format_df_for_printout(df=pd.DataFrame(all_best_paths), table_format="psql",))
+            else:
+                funding_rate_status.append("No profitable paths found")
             for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
                 long_connector = funding_arbitrage_info["connector_1"] if funding_arbitrage_info["side"] == TradeType.BUY else funding_arbitrage_info["connector_2"]
                 short_connector = funding_arbitrage_info["connector_2"] if funding_arbitrage_info["side"] == TradeType.BUY else funding_arbitrage_info["connector_1"]
