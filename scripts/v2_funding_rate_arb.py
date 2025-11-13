@@ -15,6 +15,9 @@ from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2Confi
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig, TripleBarrierConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
 
+# Critical production utilities
+from utils import TelegramAlerter, AlertLevel, get_rate_limiter, rate_limited
+
 
 class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     script_file_name: str = os.path.basename(__file__)
@@ -149,6 +152,18 @@ class FundingRateArbitrage(StrategyV2Base):
         self.active_funding_arbitrages = {}
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
 
+        # Initialize Telegram alerter for critical event monitoring
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        self.alerter = TelegramAlerter(bot_token, chat_id)
+
+        # Initialize rate limiter to prevent IP bans
+        self.rate_limiter = get_rate_limiter()
+
+        # Track errors for high error rate alerting
+        self.error_count = 0
+        self.last_error_reset = None
+
     def start(self, clock: Clock, timestamp: float) -> None:
         """
         Start the strategy.
@@ -176,6 +191,7 @@ class FundingRateArbitrage(StrategyV2Base):
 
     # ========================================
     # SAFE API WRAPPERS (Bug fixes #1-10)
+    # With rate limiting to prevent IP bans
     # ========================================
 
     def safe_get_price(self, connector_name: str, trading_pair: str, price_type=PriceType.MidPrice) -> Decimal | None:
@@ -183,6 +199,9 @@ class FundingRateArbitrage(StrategyV2Base):
         Safe wrapper for get_price_by_type with error handling.
         Returns None if price unavailable instead of crashing.
         """
+        # Apply rate limiting
+        self.rate_limiter.wait_if_needed(connector_name)
+
         try:
             price = self.market_data_provider.get_price_by_type(
                 connector_name=connector_name,
@@ -195,13 +214,18 @@ class FundingRateArbitrage(StrategyV2Base):
             return Decimal(str(price))
         except (TypeError, ValueError, AttributeError) as e:
             self.logger().error(f"Error getting price for {connector_name} {trading_pair}: {e}")
+            self.track_error()
             return None
         except Exception as e:
             self.logger().error(f"Unexpected error getting price for {connector_name} {trading_pair}: {e}")
+            self.track_error()
             return None
 
     def safe_get_price_for_volume(self, connector_name: str, trading_pair: str, quote_volume: Decimal, is_buy: bool) -> Decimal | None:
         """Safe wrapper for get_price_for_quote_volume with error handling."""
+        # Apply rate limiting
+        self.rate_limiter.wait_if_needed(connector_name)
+
         try:
             result = self.market_data_provider.get_price_for_quote_volume(
                 connector_name=connector_name,
@@ -215,13 +239,18 @@ class FundingRateArbitrage(StrategyV2Base):
             return Decimal(str(result.result_price))
         except (TypeError, ValueError, AttributeError) as e:
             self.logger().error(f"Error getting price for volume {connector_name} {trading_pair}: {e}")
+            self.track_error()
             return None
         except Exception as e:
             self.logger().error(f"Unexpected error getting price for volume {connector_name} {trading_pair}: {e}")
+            self.track_error()
             return None
 
     def safe_get_balance(self, connector_name: str, currency: str) -> Decimal | None:
         """Safe wrapper for get_available_balance with error handling."""
+        # Apply rate limiting
+        self.rate_limiter.wait_if_needed(connector_name)
+
         try:
             connector = self.connectors.get(connector_name)
             if connector is None:
@@ -234,15 +263,20 @@ class FundingRateArbitrage(StrategyV2Base):
             return Decimal(str(balance))
         except (TypeError, ValueError, AttributeError, KeyError) as e:
             self.logger().error(f"Error getting balance for {connector_name} {currency}: {e}")
+            self.track_error()
             return None
         except Exception as e:
             self.logger().error(f"Unexpected error getting balance for {connector_name} {currency}: {e}")
+            self.track_error()
             return None
 
     def safe_get_fee(self, connector_name: str, base_currency: str, quote_currency: str,
                     order_type: OrderType, order_side: TradeType, amount: Decimal,
                     price: Decimal, is_maker: bool, position_action: PositionAction) -> Decimal | None:
         """Safe wrapper for get_fee with error handling."""
+        # Apply rate limiting
+        self.rate_limiter.wait_if_needed(connector_name)
+
         try:
             connector = self.connectors.get(connector_name)
             if connector is None:
@@ -265,9 +299,11 @@ class FundingRateArbitrage(StrategyV2Base):
             return Decimal(str(fee_obj.percent))
         except (TypeError, ValueError, AttributeError, KeyError) as e:
             self.logger().error(f"Error getting fee for {connector_name}: {e}")
+            self.track_error()
             return Decimal("0.001")  # Fallback to conservative estimate
         except Exception as e:
             self.logger().error(f"Unexpected error getting fee for {connector_name}: {e}")
+            self.track_error()
             return Decimal("0.001")
 
     def safe_split_trading_pair(self, trading_pair: str) -> tuple[str, str] | None:
@@ -289,6 +325,34 @@ class FundingRateArbitrage(StrategyV2Base):
         except Exception as e:
             self.logger().error(f"Error splitting trading_pair {trading_pair}: {e}")
             return None
+
+    def track_error(self):
+        """
+        Track errors and send alert if error rate is too high.
+        Resets error count every hour.
+        """
+        import time
+
+        current_time = time.time()
+
+        # Reset error count every hour
+        if self.last_error_reset is None:
+            self.last_error_reset = current_time
+        elif current_time - self.last_error_reset > 3600:  # 1 hour
+            if self.error_count > 0:
+                self.logger().info(f"Resetting error count: {self.error_count} errors in last hour")
+            self.error_count = 0
+            self.last_error_reset = current_time
+
+        # Increment error count
+        self.error_count += 1
+
+        # Alert if error rate exceeds threshold (20 errors per hour)
+        if self.error_count >= 20:
+            self.alerter.alert_high_error_rate(
+                error_count=self.error_count,
+                time_period="1 hour"
+            )
 
     def validate_sufficient_balance(self, connector_1: str, connector_2: str, position_size_quote: Decimal) -> tuple[bool, str]:
         """
@@ -685,6 +749,15 @@ class FundingRateArbitrage(StrategyV2Base):
                         "funding_payments": [],
                         "position_size_quote": position_size_quote,
                     }
+
+                    # Send alert for new position opened
+                    self.alerter.alert_position_opened(
+                        token=token,
+                        connector_1=connector_1,
+                        connector_2=connector_2,
+                        position_size=float(position_size_quote)
+                    )
+
                     # Add to create_actions list and continue checking other tokens
                     create_actions.extend([CreateExecutorAction(executor_config=position_executor_config_1),
                                           CreateExecutorAction(executor_config=position_executor_config_2)])
@@ -713,6 +786,19 @@ class FundingRateArbitrage(StrategyV2Base):
                 if not is_hedged:
                     if self.config.emergency_close_on_imbalance:
                         self.logger().error(f"EMERGENCY CLOSE for {token}: {hedge_msg}")
+
+                        # Send critical alert via Telegram
+                        self.alerter.alert_emergency_close(
+                            token=token,
+                            reason=hedge_msg,
+                            details={
+                                "Exchange 1": funding_arbitrage_info["connector_1"],
+                                "Exchange 2": funding_arbitrage_info["connector_2"],
+                                "Position Size": f"${self.config.position_size_quote}",
+                                "Timestamp": str(self.current_timestamp)
+                            }
+                        )
+
                         executors = self.filter_executors(
                             executors=self.get_all_executors(),
                             filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
@@ -776,6 +862,15 @@ class FundingRateArbitrage(StrategyV2Base):
 
             if take_profit_condition:
                 self.logger().info(f"Take profit profitability reached for {token}, stopping executors")
+
+                # Send alert for position closed with profit
+                total_pnl = float(executors_pnl + funding_payments_pnl)
+                self.alerter.alert_position_closed(
+                    token=token,
+                    pnl=total_pnl,
+                    reason="Take profit target reached"
+                )
+
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 # Prevent memory leak: keep only last 10 stopped arbitrages per token
                 if len(self.stopped_funding_arbitrages[token]) > 10:
@@ -784,6 +879,15 @@ class FundingRateArbitrage(StrategyV2Base):
                 tokens_to_remove.append(token)
             elif current_funding_condition:
                 self.logger().info(f"Funding rate difference reached for stop loss for {token}, stopping executors")
+
+                # Send alert for position closed with stop loss
+                total_pnl = float(executors_pnl + funding_payments_pnl)
+                self.alerter.alert_position_closed(
+                    token=token,
+                    pnl=total_pnl,
+                    reason="Funding rate stop loss triggered"
+                )
+
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
                 # Prevent memory leak: keep only last 10 stopped arbitrages per token
                 if len(self.stopped_funding_arbitrages[token]) > 10:
