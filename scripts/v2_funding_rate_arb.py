@@ -44,7 +44,7 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     position_size_quote: Decimal = Field(
         default=100,
         json_schema_extra={
-            "prompt": lambda mi: "Enter the position size in quote asset (e.g. order amount 100 will open 100 long on hyperliquid and 100 short on binance): ",
+            "prompt": lambda mi: "Enter the position size in quote asset (e.g. order amount 100 will open 100 long on connector1 and 100 short on connector2): ",
             "prompt_on_new": True
         }
     )
@@ -105,12 +105,29 @@ class FundingRateArbitrage(StrategyV2Base):
         "binance_perpetual": "USDT",
         "bybit_perpetual": "USDT",
         "okx_perpetual": "USDT",
+        "gate_io_perpetual": "USDT",
+        "kucoin_perpetual": "USDT",
+        "bingx_perpetual": "USDT",
+        "bitget_perpetual": "USDT",
+        "mexc_perpetual": "USDT",
+        "phemex_perpetual": "USDT",
     }
     funding_payment_interval_map = {
-        "binance_perpetual": 60 * 60 * 8,
-        "bybit_perpetual": 60 * 60 * 8,
-        "okx_perpetual": 60 * 60 * 8,
-        "hyperliquid_perpetual": 60 * 60 * 1,
+        "binance_perpetual": 60 * 60 * 8,  # 8 hours
+        "bybit_perpetual": 60 * 60 * 8,    # 8 hours
+        "okx_perpetual": 60 * 60 * 8,      # 8 hours
+        "gate_io_perpetual": 60 * 60 * 8,  # 8 hours
+        "kucoin_perpetual": 60 * 60 * 8,   # 8 hours
+        "bingx_perpetual": 60 * 60 * 8,    # 8 hours
+        "bitget_perpetual": 60 * 60 * 8,   # 8 hours
+        "mexc_perpetual": 60 * 60 * 8,     # 8 hours
+        "phemex_perpetual": 60 * 60 * 8,   # 8 hours
+        "hyperliquid_perpetual": 60 * 60 * 1,  # 1 hour
+    }
+    # Exchanges that only support ONEWAY position mode (most support HEDGE)
+    oneway_only_exchanges = {
+        "hyperliquid_perpetual",
+        # Add other ONEWAY-only exchanges here if needed
     }
     funding_profitability_interval = 60 * 60 * 24
 
@@ -144,7 +161,8 @@ class FundingRateArbitrage(StrategyV2Base):
     def apply_initial_setting(self):
         for connector_name, connector in self.connectors.items():
             if self.is_perpetual(connector_name):
-                position_mode = PositionMode.ONEWAY if connector_name == "hyperliquid_perpetual" else PositionMode.HEDGE
+                # Check if exchange only supports ONEWAY mode, otherwise use HEDGE for better risk management
+                position_mode = PositionMode.ONEWAY if connector_name in self.oneway_only_exchanges else PositionMode.HEDGE
                 connector.set_position_mode(position_mode)
                 for trading_pair in self.market_data_provider.get_trading_pairs(connector_name):
                     connector.set_leverage(trading_pair, self.config.leverage)
