@@ -178,6 +178,8 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         This methods compares the profitability of buying at market in the two exchanges. If the side is TradeType.BUY
         means that the operation is long on connector 1 and short on connector 2.
+
+        IMPORTANT: This calculates the cost of BOTH opening AND closing positions, as both incur fees.
         """
         trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
         trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
@@ -194,7 +196,9 @@ class FundingRateArbitrage(StrategyV2Base):
             quote_volume=quote_volume,
             is_buy=side != TradeType.BUY,
         ).result_price)
-        estimated_fees_connector_1 = self.connectors[connector_1].get_fee(
+
+        # Calculate fees for OPENING positions
+        estimated_fees_open_connector_1 = self.connectors[connector_1].get_fee(
             base_currency=trading_pair_1.split("-")[0],
             quote_currency=trading_pair_1.split("-")[1],
             order_type=OrderType.MARKET,
@@ -204,7 +208,7 @@ class FundingRateArbitrage(StrategyV2Base):
             is_maker=False,
             position_action=PositionAction.OPEN
         ).percent
-        estimated_fees_connector_2 = self.connectors[connector_2].get_fee(
+        estimated_fees_open_connector_2 = self.connectors[connector_2].get_fee(
             base_currency=trading_pair_2.split("-")[0],
             quote_currency=trading_pair_2.split("-")[1],
             order_type=OrderType.MARKET,
@@ -215,11 +219,37 @@ class FundingRateArbitrage(StrategyV2Base):
             position_action=PositionAction.OPEN
         ).percent
 
+        # Calculate fees for CLOSING positions (opposite sides)
+        estimated_fees_close_connector_1 = self.connectors[connector_1].get_fee(
+            base_currency=trading_pair_1.split("-")[0],
+            quote_currency=trading_pair_1.split("-")[1],
+            order_type=OrderType.MARKET,
+            order_side=TradeType.BUY if side != TradeType.BUY else TradeType.SELL,  # Opposite side
+            amount=quote_volume / connector_1_price,
+            price=connector_1_price,
+            is_maker=False,
+            position_action=PositionAction.CLOSE
+        ).percent
+        estimated_fees_close_connector_2 = self.connectors[connector_2].get_fee(
+            base_currency=trading_pair_2.split("-")[0],
+            quote_currency=trading_pair_2.split("-")[1],
+            order_type=OrderType.MARKET,
+            order_side=side,  # Opposite side of opening
+            amount=quote_volume / connector_2_price,
+            price=connector_2_price,
+            is_maker=False,
+            position_action=PositionAction.CLOSE
+        ).percent
+
+        # Total fees = open + close for both connectors
+        total_fees = (estimated_fees_open_connector_1 + estimated_fees_close_connector_1 +
+                     estimated_fees_open_connector_2 + estimated_fees_close_connector_2)
+
         if side == TradeType.BUY:
             estimated_trade_pnl_pct = (connector_2_price - connector_1_price) / connector_1_price
         else:
             estimated_trade_pnl_pct = (connector_1_price - connector_2_price) / connector_2_price
-        return estimated_trade_pnl_pct - estimated_fees_connector_1 - estimated_fees_connector_2
+        return estimated_trade_pnl_pct - total_fees
 
     def get_most_profitable_combination(self, funding_info_report: Dict):
         best_combination = None
@@ -291,8 +321,15 @@ class FundingRateArbitrage(StrategyV2Base):
                         "funding_payments": [],
                         "position_size_quote": position_size_quote,
                     }
-                    return [CreateExecutorAction(executor_config=position_executor_config_1),
-                            CreateExecutorAction(executor_config=position_executor_config_2)]
+                    # Add to create_actions list and continue checking other tokens
+                    create_actions.extend([CreateExecutorAction(executor_config=position_executor_config_1),
+                                          CreateExecutorAction(executor_config=position_executor_config_2)])
+                    # Update connectors_in_use and available_connectors for next iteration
+                    connectors_in_use.add(connector_1)
+                    connectors_in_use.add(connector_2)
+                    available_connectors = set(self.config.connectors) - connectors_in_use
+                    if len(available_connectors) < 2:
+                        break  # No more available connector pairs
         return create_actions
 
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
@@ -332,11 +369,17 @@ class FundingRateArbitrage(StrategyV2Base):
             if take_profit_condition:
                 self.logger().info(f"Take profit profitability reached for {token}, stopping executors")
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
+                # Prevent memory leak: keep only last 10 stopped arbitrages per token
+                if len(self.stopped_funding_arbitrages[token]) > 10:
+                    self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 tokens_to_remove.append(token)
             elif current_funding_condition:
                 self.logger().info(f"Funding rate difference reached for stop loss for {token}, stopping executors")
                 self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
+                # Prevent memory leak: keep only last 10 stopped arbitrages per token
+                if len(self.stopped_funding_arbitrages[token]) > 10:
+                    self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 tokens_to_remove.append(token)
 
@@ -350,10 +393,15 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         Based on the funding payment event received, check if one of the active arbitrages matches to add the event
         to the list.
+
+        Note: We keep only the last 100 funding payments to prevent memory leak.
         """
         token = funding_payment_completed_event.trading_pair.split("-")[0]
         if token in self.active_funding_arbitrages:
             self.active_funding_arbitrages[token]["funding_payments"].append(funding_payment_completed_event)
+            # Prevent memory leak: keep only last 100 payments (enough for ~4 days on Hyperliquid, ~33 days on OKX)
+            if len(self.active_funding_arbitrages[token]["funding_payments"]) > 100:
+                self.active_funding_arbitrages[token]["funding_payments"] = self.active_funding_arbitrages[token]["funding_payments"][-100:]
 
     def get_position_executors_config(self, token, connector_1, connector_2, trade_side, position_size_quote: Decimal):
         # Get price for connector_1
