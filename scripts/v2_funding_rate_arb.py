@@ -16,7 +16,7 @@ from hummingbot.strategy_v2.executors.position_executor.data_types import Positi
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
 
 # Critical production utilities
-from utils import TelegramAlerter, AlertLevel, get_rate_limiter, rate_limited
+from utils import TelegramAlerter, get_rate_limiter
 
 
 class FundingRateArbitrageConfig(StrategyV2ConfigBase):

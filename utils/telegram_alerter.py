@@ -78,8 +78,9 @@ class TelegramAlerter:
                 "parse_mode": "Markdown"
             }
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, timeout=10) as response:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=payload) as response:
                     if response.status == 200:
                         self.logger.debug("Telegram alert sent successfully")
                     else:

@@ -77,6 +77,7 @@ class RateLimiter:
 
         limit = self._get_limit(exchange)
         window = 1.0  # 1 second window
+        wait_time = 0.0
 
         with self.locks[exchange]:
             current_time = time.time()
@@ -101,7 +102,7 @@ class RateLimiter:
             # Record this request
             self.request_history[exchange].append(current_time)
 
-            return 0 if len(self.request_history[exchange]) <= limit else wait_time
+            return wait_time if wait_time > 0 else 0.0
 
     def get_stats(self, exchange: str) -> dict:
         """Get rate limiting statistics for exchange"""
