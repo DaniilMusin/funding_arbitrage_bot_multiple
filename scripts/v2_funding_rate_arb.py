@@ -150,6 +150,7 @@ class FundingRateArbitrage(StrategyV2Base):
         super().__init__(connectors, config)
         self.config = config
         self.active_funding_arbitrages = {}
+        self.pending_funding_arbitrages = {}  # NEW: positions awaiting validation
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
 
         # Initialize Telegram alerter for critical event monitoring
@@ -172,6 +173,41 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         self._last_timestamp = timestamp
         self.apply_initial_setting()
+        self.check_quote_currency_consistency()
+
+    def check_quote_currency_consistency(self):
+        """
+        WARNING: Check if exchanges use different quote currencies (USDT vs USD).
+        This is important because USDT can depeg from USD, causing false arbitrage signals.
+        """
+        quote_currencies = set()
+        for connector_name in self.config.connectors:
+            quote = self.quote_markets_map.get(connector_name, "USDT")
+            quote_currencies.add(quote)
+
+        if len(quote_currencies) > 1:
+            self.logger().warning("⚠️  CRITICAL WARNING: Multiple quote currencies detected!")
+            self.logger().warning(f"   Quote currencies in use: {quote_currencies}")
+            self.logger().warning("   Risk: USDT can depeg from USD, causing false arbitrage signals!")
+            self.logger().warning("   Example: USDT at $0.95 makes BTC-USDT appear cheaper than BTC-USD")
+            self.logger().warning("   Recommendation:")
+            self.logger().warning("     1. Monitor USDT/USD price manually")
+            self.logger().warning("     2. Stop bot if USDT depeg > 0.5%")
+            self.logger().warning("     3. OR: Use only exchanges with same quote currency")
+
+            # Send Telegram alert
+            self.alerter.warning(
+                title="Multiple Quote Currencies",
+                message=f"Bot uses multiple quote currencies: {quote_currencies}",
+                details={
+                    "Quote Currencies": ", ".join(quote_currencies),
+                    "Risk": "USDT depeg can cause false arbitrage",
+                    "Action": "Monitor USDT/USD price manually",
+                    "Stop Threshold": "USDT depeg > 0.5%"
+                }
+            )
+        else:
+            self.logger().info(f"✅ Quote currency check: All exchanges use {list(quote_currencies)[0]}")
 
     def apply_initial_setting(self):
         for connector_name, connector in self.connectors.items():
@@ -184,7 +220,12 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def get_connectors_in_use(self) -> Set[str]:
         connectors = set()
+        # Include active positions
         for info in self.active_funding_arbitrages.values():
+            connectors.add(info["connector_1"])
+            connectors.add(info["connector_2"])
+        # Also include pending positions (don't allow new positions on same connectors)
+        for info in self.pending_funding_arbitrages.values():
             connectors.add(info["connector_1"])
             connectors.add(info["connector_2"])
         return connectors
@@ -741,22 +782,19 @@ class FundingRateArbitrage(StrategyV2Base):
                         self.logger().error(f"Failed to create executor configs for {token}, skipping")
                         continue
 
-                    self.active_funding_arbitrages[token] = {
+                    # CRITICAL FIX: Add to PENDING first (not active!)
+                    # Position will be validated and moved to active in stop_actions_proposal
+                    self.pending_funding_arbitrages[token] = {
                         "connector_1": connector_1,
                         "connector_2": connector_2,
                         "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
                         "side": trade_side,
                         "funding_payments": [],
                         "position_size_quote": position_size_quote,
+                        "timestamp": self.current_timestamp,  # Track when pending started
                     }
 
-                    # Send alert for new position opened
-                    self.alerter.alert_position_opened(
-                        token=token,
-                        connector_1=connector_1,
-                        connector_2=connector_2,
-                        position_size=float(position_size_quote)
-                    )
+                    self.logger().info(f"Position for {token} marked as PENDING. Awaiting validation after execution.")
 
                     # Add to create_actions list and continue checking other tokens
                     create_actions.extend([CreateExecutorAction(executor_config=position_executor_config_1),
@@ -769,6 +807,152 @@ class FundingRateArbitrage(StrategyV2Base):
                         break  # No more available connector pairs
         return create_actions
 
+    def validate_pending_positions(self) -> List[StopExecutorAction]:
+        """
+        CRITICAL: Validate pending positions before marking them as active.
+        This prevents race condition where position is marked active before orders execute.
+
+        Returns: List of StopExecutorAction for failed pending positions
+        """
+        stop_executor_actions = []
+        pending_to_remove = []
+
+        for token, pending_info in list(self.pending_funding_arbitrages.items()):
+            connector_1 = pending_info["connector_1"]
+            connector_2 = pending_info["connector_2"]
+
+            # Check timeout (if pending > 10 seconds, something is wrong)
+            time_pending = self.current_timestamp - pending_info.get("timestamp", self.current_timestamp)
+            if time_pending > 10:
+                self.logger().error(f"Pending position for {token} timed out ({time_pending:.1f}s). Emergency closing.")
+                self.alerter.alert_emergency_close(
+                    token=token,
+                    reason=f"Pending position timeout ({time_pending:.1f}s > 10s)",
+                    details={
+                        "Exchange 1": connector_1,
+                        "Exchange 2": connector_2,
+                        "Time Pending": f"{time_pending:.1f}s"
+                    }
+                )
+                # Get executors and close them
+                executors = self.filter_executors(
+                    executors=self.get_all_executors(),
+                    filter_func=lambda x: x.id in pending_info["executors_ids"]
+                )
+                stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                pending_to_remove.append(token)
+                continue
+
+            # Validate position hedge
+            is_hedged, hedge_msg = self.validate_position_hedge_for_pending(token, pending_info)
+
+            if is_hedged:
+                # SUCCESS: Move to active
+                self.active_funding_arbitrages[token] = pending_info
+                pending_to_remove.append(token)
+                self.logger().info(f"✅ Position for {token} VALIDATED. Moved to active. {hedge_msg}")
+
+                # Send success alert
+                self.alerter.alert_position_opened(
+                    token=token,
+                    connector_1=connector_1,
+                    connector_2=connector_2,
+                    position_size=float(pending_info["position_size_quote"])
+                )
+            else:
+                # FAILURE: Emergency close
+                self.logger().error(f"❌ Position validation FAILED for {token}: {hedge_msg}")
+                self.alerter.alert_emergency_close(
+                    token=token,
+                    reason=f"Position validation failed: {hedge_msg}",
+                    details={
+                        "Exchange 1": connector_1,
+                        "Exchange 2": connector_2,
+                        "Position Size": f"${pending_info['position_size_quote']}",
+                        "Timestamp": str(self.current_timestamp)
+                    }
+                )
+                # Get executors and close them
+                executors = self.filter_executors(
+                    executors=self.get_all_executors(),
+                    filter_func=lambda x: x.id in pending_info["executors_ids"]
+                )
+                stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                pending_to_remove.append(token)
+                self.stopped_funding_arbitrages[token].append({
+                    **pending_info,
+                    "close_reason": f"Validation failed: {hedge_msg}"
+                })
+
+        # Remove processed pending positions
+        for token in pending_to_remove:
+            del self.pending_funding_arbitrages[token]
+
+        return stop_executor_actions
+
+    def validate_position_hedge_for_pending(self, token: str, pending_info: dict) -> tuple[bool, str]:
+        """
+        Validate position hedge for pending position.
+        Similar to validate_position_hedge but works with pending_info dict.
+        """
+        connector_1 = pending_info["connector_1"]
+        connector_2 = pending_info["connector_2"]
+
+        # Get executors
+        executors = self.filter_executors(
+            executors=self.get_all_executors(),
+            filter_func=lambda x: x.id in pending_info["executors_ids"]
+        )
+
+        if len(executors) != 2:
+            return False, f"Expected 2 executors, found {len(executors)}"
+
+        # Find which executor belongs to which connector
+        executor_1 = None
+        executor_2 = None
+        for executor in executors:
+            if executor.connector_name == connector_1:
+                executor_1 = executor
+            elif executor.connector_name == connector_2:
+                executor_2 = executor
+
+        if executor_1 is None or executor_2 is None:
+            return False, f"Could not find executors for both connectors"
+
+        # Check if filled_amount exists and > 0
+        if executor_1.filled_amount is None or executor_1.filled_amount <= 0:
+            return False, f"{connector_1} position not filled yet: {executor_1.filled_amount}"
+
+        if executor_2.filled_amount is None or executor_2.filled_amount <= 0:
+            return False, f"{connector_2} position not filled yet: {executor_2.filled_amount}"
+
+        # Get current prices
+        trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
+        trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+
+        price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
+        price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
+
+        if price_1 is None:
+            return False, f"Price unavailable for {connector_1} {trading_pair_1}"
+        if price_2 is None:
+            return False, f"Price unavailable for {connector_2} {trading_pair_2}"
+
+        # Calculate notional values
+        notional_1 = abs(executor_1.filled_amount) * price_1
+        notional_2 = abs(executor_2.filled_amount) * price_2
+
+        # Check imbalance
+        if notional_1 == 0 or notional_2 == 0:
+            return False, f"Zero notional value detected: {notional_1}, {notional_2}"
+
+        imbalance = abs(notional_1 - notional_2) / max(notional_1, notional_2)
+
+        if imbalance > self.config.max_position_imbalance_pct:
+            return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (N1: ${notional_1:.2f}, N2: ${notional_2:.2f})"
+
+        return True, f"Hedge OK: imbalance {imbalance:.2%} (N1: ${notional_1:.2f}, N2: ${notional_2:.2f})"
+
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
         """
         Once the funding rate arbitrage is created we are going to control the funding payments pnl and the current
@@ -778,6 +962,11 @@ class FundingRateArbitrage(StrategyV2Base):
         SAFETY: Also monitors position hedge and triggers emergency close if imbalanced.
         """
         stop_executor_actions = []
+
+        # CRITICAL: First validate pending positions
+        pending_stop_actions = self.validate_pending_positions()
+        stop_executor_actions.extend(pending_stop_actions)
+
         tokens_to_remove = []
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
             # SAFETY CHECK: Validate position hedge (continuous monitoring)
