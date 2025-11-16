@@ -132,18 +132,18 @@ class FundingScheduler:
         
         schedules['kucoin_perpetual'] = schedules['kucoin']
         
-        # Hyperliquid: 00:00, 08:00, 16:00 UTC (assuming same as others)
+        # Hyperliquid: HOURLY funding (every hour at :00)
         schedules['hyperliquid'] = ExchangeSchedule(
             exchange_name='hyperliquid',
             settlement_times=[
-                SettlementTime(0, 0, 'UTC'),
-                SettlementTime(8, 0, 'UTC'),
-                SettlementTime(16, 0, 'UTC'),
+                SettlementTime(hour, 0, 'UTC') for hour in range(24)
             ],
-            pre_settlement_buffer_minutes=5,
-            post_settlement_delay_minutes=3,
+            pre_settlement_buffer_minutes=3,  # Close 3 min before hourly settlement
+            post_settlement_delay_minutes=2,
         )
-        
+
+        schedules['hyperliquid_perpetual'] = schedules['hyperliquid']
+
         return schedules
     
     def get_settlement_status(self, 
