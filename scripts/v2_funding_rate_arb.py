@@ -183,6 +183,10 @@ class FundingRateArbitrage(StrategyV2Base):
         self.error_count = 0
         self.last_error_reset = None
 
+        # BUG FIX #20: Track last statistics logging time
+        self.last_stats_log_time = None
+        self.stats_log_interval = 300  # Log stats every 5 minutes
+
     def start(self, clock: Clock, timestamp: float) -> None:
         """
         Start the strategy.
@@ -190,8 +194,33 @@ class FundingRateArbitrage(StrategyV2Base):
         :param timestamp: Current time.
         """
         self._last_timestamp = timestamp
+
+        # BUG FIX #20: Add comprehensive startup logging
+        self.logger().info("=" * 80)
+        self.logger().info("🚀 FUNDING RATE ARBITRAGE BOT STARTING")
+        self.logger().info("=" * 80)
+        self.logger().info(f"📅 Timestamp: {timestamp}")
+        self.logger().info(f"📊 Configuration:")
+        self.logger().info(f"   • Connectors: {', '.join(sorted(self.config.connectors))}")
+        self.logger().info(f"   • Tokens: {', '.join(sorted(self.config.tokens))}")
+        self.logger().info(f"   • Leverage: {self.config.leverage}x")
+        self.logger().info(f"   • Min funding rate: {self.config.min_funding_rate_profitability:.4%}")
+        self.logger().info(f"   • Position size: ${self.config.position_size_quote}")
+        self.logger().info(f"   • Max slippage: {self.config.max_slippage_pct:.2%}")
+        self.logger().info(f"   • Min time to funding: {self.config.min_time_to_next_funding_seconds}s")
+        self.logger().info(f"   • Order book depth check: {self.config.check_order_book_depth_enabled}")
+        if self.config.check_order_book_depth_enabled:
+            self.logger().info(f"   • Min order book depth: {self.config.min_order_book_depth_multiplier}x position size")
+        self.logger().info(f"   • Position validation: {self.config.position_validation_enabled}")
+        self.logger().info(f"   • Emergency close on imbalance: {self.config.emergency_close_on_imbalance}")
+        self.logger().info(f"   • Max position imbalance: {self.config.max_position_imbalance_pct:.1%}")
+        self.logger().info("=" * 80)
+
         self.apply_initial_setting()
         self.check_quote_currency_consistency()
+
+        self.logger().info("✅ Strategy initialization complete")
+        self.logger().info("=" * 80)
 
     def check_quote_currency_consistency(self):
         """
@@ -1054,7 +1083,21 @@ class FundingRateArbitrage(StrategyV2Base):
                 # SUCCESS: Move to active
                 self.active_funding_arbitrages[token] = pending_info
                 pending_to_remove.append(token)
-                self.logger().info(f"✅ Position for {token} VALIDATED. Moved to active. {hedge_msg}")
+
+                # BUG FIX #20: Enhanced logging for successful position opening
+                self.logger().info("=" * 60)
+                self.logger().info(f"✅ POSITION OPENED SUCCESSFULLY: {token}")
+                self.logger().info("=" * 60)
+                self.logger().info(f"📊 Position Details:")
+                self.logger().info(f"   • Token: {token}")
+                self.logger().info(f"   • Exchange 1: {connector_1}")
+                self.logger().info(f"   • Exchange 2: {connector_2}")
+                self.logger().info(f"   • Side: {pending_info['side']}")
+                self.logger().info(f"   • Position Size: ${pending_info['position_size_quote']}")
+                self.logger().info(f"   • Validation: {hedge_msg}")
+                self.logger().info(f"   • Time to validate: {self.current_timestamp - pending_info.get('timestamp', self.current_timestamp):.2f}s")
+                self.logger().info(f"📈 Active Positions: {len(self.active_funding_arbitrages)} | Pending: {len(self.pending_funding_arbitrages) - 1}")
+                self.logger().info("=" * 60)
 
                 # Send success alert
                 self.alerter.alert_position_opened(
@@ -1167,6 +1210,9 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         stop_executor_actions = []
 
+        # BUG FIX #20: Log periodic statistics
+        self.log_periodic_statistics()
+
         # CRITICAL: First validate pending positions
         pending_stop_actions = self.validate_pending_positions()
         stop_executor_actions.extend(pending_stop_actions)
@@ -1254,10 +1300,28 @@ class FundingRateArbitrage(StrategyV2Base):
             current_funding_condition = funding_rate_diff * self.funding_profitability_interval < self.config.funding_rate_diff_stop_loss
 
             if take_profit_condition:
-                self.logger().info(f"Take profit profitability reached for {token}, stopping executors")
+                # BUG FIX #20: Enhanced logging for position closing
+                total_pnl = float(executors_pnl + funding_payments_pnl)
+                total_pnl_pct = (total_pnl / float(position_size)) * 100 if position_size > 0 else 0
+
+                self.logger().info("=" * 60)
+                self.logger().info(f"💰 TAKE PROFIT REACHED: {token}")
+                self.logger().info("=" * 60)
+                self.logger().info(f"📊 Position Details:")
+                self.logger().info(f"   • Token: {token}")
+                self.logger().info(f"   • Exchange 1: {connector_1}")
+                self.logger().info(f"   • Exchange 2: {connector_2}")
+                self.logger().info(f"   • Side: {funding_arbitrage_info['side']}")
+                self.logger().info(f"   • Position Size: ${position_size}")
+                self.logger().info(f"💵 PnL Summary:")
+                self.logger().info(f"   • Trading PnL: ${executors_pnl:.2f}")
+                self.logger().info(f"   • Funding Payments: ${funding_payments_pnl:.2f}")
+                self.logger().info(f"   • Total PnL: ${total_pnl:.2f} ({total_pnl_pct:+.2f}%)")
+                self.logger().info(f"   • Funding Payments Collected: {len(funding_arbitrage_info['funding_payments'])}")
+                self.logger().info(f"📈 Active Positions: {len(self.active_funding_arbitrages) - 1}")
+                self.logger().info("=" * 60)
 
                 # Send alert for position closed with profit
-                total_pnl = float(executors_pnl + funding_payments_pnl)
                 self.alerter.alert_position_closed(
                     token=token,
                     pnl=total_pnl,
@@ -1271,10 +1335,31 @@ class FundingRateArbitrage(StrategyV2Base):
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 tokens_to_remove.append(token)
             elif current_funding_condition:
-                self.logger().info(f"Funding rate difference reached for stop loss for {token}, stopping executors")
+                # BUG FIX #20: Enhanced logging for stop loss
+                total_pnl = float(executors_pnl + funding_payments_pnl)
+                total_pnl_pct = (total_pnl / float(position_size)) * 100 if position_size > 0 else 0
+
+                self.logger().info("=" * 60)
+                self.logger().info(f"🛑 STOP LOSS TRIGGERED: {token}")
+                self.logger().info("=" * 60)
+                self.logger().info(f"📊 Position Details:")
+                self.logger().info(f"   • Token: {token}")
+                self.logger().info(f"   • Exchange 1: {connector_1}")
+                self.logger().info(f"   • Exchange 2: {connector_2}")
+                self.logger().info(f"   • Side: {funding_arbitrage_info['side']}")
+                self.logger().info(f"   • Position Size: ${position_size}")
+                self.logger().info(f"📉 Reason:")
+                self.logger().info(f"   • Funding Rate Diff: {funding_rate_diff:.6f}")
+                self.logger().info(f"   • Stop Loss Threshold: {self.config.funding_rate_diff_stop_loss:.6f}")
+                self.logger().info(f"💵 PnL Summary:")
+                self.logger().info(f"   • Trading PnL: ${executors_pnl:.2f}")
+                self.logger().info(f"   • Funding Payments: ${funding_payments_pnl:.2f}")
+                self.logger().info(f"   • Total PnL: ${total_pnl:.2f} ({total_pnl_pct:+.2f}%)")
+                self.logger().info(f"   • Funding Payments Collected: {len(funding_arbitrage_info['funding_payments'])}")
+                self.logger().info(f"📈 Active Positions: {len(self.active_funding_arbitrages) - 1}")
+                self.logger().info("=" * 60)
 
                 # Send alert for position closed with stop loss
-                total_pnl = float(executors_pnl + funding_payments_pnl)
                 self.alerter.alert_position_closed(
                     token=token,
                     pnl=total_pnl,
@@ -1293,6 +1378,70 @@ class FundingRateArbitrage(StrategyV2Base):
             del self.active_funding_arbitrages[token]
 
         return stop_executor_actions
+
+    def log_periodic_statistics(self):
+        """
+        BUG FIX #20: Log periodic statistics about bot performance.
+        Called every 5 minutes to provide visibility into bot operation.
+        """
+        if self.last_stats_log_time is None:
+            self.last_stats_log_time = self.current_timestamp
+            return
+
+        time_since_last_log = self.current_timestamp - self.last_stats_log_time
+        if time_since_last_log < self.stats_log_interval:
+            return
+
+        self.last_stats_log_time = self.current_timestamp
+
+        # Calculate total PnL and stats
+        total_positions = len(self.active_funding_arbitrages)
+        pending_positions = len(self.pending_funding_arbitrages)
+        total_funding_payments = 0
+        total_pnl = Decimal("0")
+
+        for token, arb_info in self.active_funding_arbitrages.items():
+            # Count funding payments
+            total_funding_payments += len(arb_info["funding_payments"])
+
+            # Calculate PnL for active positions
+            executors = self.filter_executors(
+                executors=self.get_all_executors(),
+                filter_func=lambda x: x.id in arb_info["executors_ids"]
+            )
+
+            funding_payments_pnl = sum(
+                funding_payment.amount if funding_payment.amount is not None else Decimal("0")
+                for funding_payment in arb_info["funding_payments"]
+            )
+
+            executors_pnl = sum(
+                executor.net_pnl_quote if executor.net_pnl_quote is not None else Decimal("0")
+                for executor in executors
+            )
+
+            total_pnl += executors_pnl + funding_payments_pnl
+
+        self.logger().info("=" * 80)
+        self.logger().info("📊 PERIODIC STATISTICS REPORT")
+        self.logger().info("=" * 80)
+        self.logger().info(f"⏰ Uptime: {time_since_last_log / 60:.1f} minutes since last report")
+        self.logger().info(f"📈 Active Positions: {total_positions}")
+        self.logger().info(f"⏳ Pending Positions: {pending_positions}")
+        self.logger().info(f"💰 Total Unrealized PnL: ${float(total_pnl):.2f}")
+        self.logger().info(f"📬 Total Funding Payments Collected: {total_funding_payments}")
+        if total_positions > 0:
+            avg_funding_per_position = total_funding_payments / total_positions
+            avg_pnl_per_position = float(total_pnl) / total_positions
+            self.logger().info(f"📊 Average per Position:")
+            self.logger().info(f"   • Funding Payments: {avg_funding_per_position:.1f}")
+            self.logger().info(f"   • Unrealized PnL: ${avg_pnl_per_position:.2f}")
+        self.logger().info(f"🔧 Rate Limiter Stats:")
+        for exchange_stats in self.rate_limiter.get_all_stats():
+            if exchange_stats['requests_last_second'] > 0:
+                self.logger().info(f"   • {exchange_stats['exchange']}: {exchange_stats['requests_last_second']}/{exchange_stats['limit']} req/s ({exchange_stats['utilization']:.0f}%)")
+        self.logger().info(f"⚠️  Error Count (since last reset): {self.error_count}")
+        self.logger().info("=" * 80)
 
     def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):
         """
