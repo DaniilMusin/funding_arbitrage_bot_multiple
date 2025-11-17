@@ -5,7 +5,7 @@ Calculates and tracks all components that determine entry viability.
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Dict, Optional, NamedTuple
+from typing import Dict, Optional, NamedTuple, List
 from enum import Enum
 import logging
 
