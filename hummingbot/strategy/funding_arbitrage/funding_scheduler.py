@@ -394,7 +394,12 @@ class FundingScheduler:
         
         if now_safe:
             # Find how long current window lasts
-            next_restriction = min(start for start, _ in all_settlements if start > current_time)
+            future_starts = [start for start, _ in all_settlements if start > current_time]
+            if not future_starts:
+                # No more settlements in near future, use large window
+                return current_time, 480  # 8 hours default
+
+            next_restriction = min(future_starts)
             duration = int((next_restriction - current_time).total_seconds() / 60)
             return current_time, duration
         

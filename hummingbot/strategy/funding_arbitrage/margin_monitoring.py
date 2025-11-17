@@ -130,22 +130,32 @@ class ExchangeMarginRequirements:
         if self.tier_system and symbol in self.tier_system:
             # Find appropriate tier
             tiers = self.tier_system[symbol]
+
+            # SAFETY: Check if tiers is not empty
+            if not tiers:
+                return self.initial_margin_rates.get(symbol, Decimal("0.1"))
+
             for tier_notional, tier_rate in tiers:
                 if notional <= tier_notional:
                     return tier_rate
             return tiers[-1][1]  # Use highest tier rate
-        
+
         return self.initial_margin_rates.get(symbol, Decimal("0.1"))  # 10% default
     
     def get_maintenance_margin_rate(self, symbol: str, notional: Decimal) -> Decimal:
         """Get maintenance margin rate for symbol/size."""
         if self.tier_system and symbol in self.tier_system:
-            tiers = self.tier_system[symbol] 
+            tiers = self.tier_system[symbol]
+
+            # SAFETY: Check if tiers is not empty
+            if not tiers:
+                return self.maintenance_margin_rates.get(symbol, Decimal("0.05"))
+
             for tier_notional, tier_rate in tiers:
                 if notional <= tier_notional:
                     return tier_rate * Decimal("0.5")  # Typically ~50% of initial
             return tiers[-1][1] * Decimal("0.5")
-        
+
         return self.maintenance_margin_rates.get(symbol, Decimal("0.05"))  # 5% default
 
 
