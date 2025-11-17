@@ -239,11 +239,21 @@ class EdgeCalculator:
         
         # Extract base and quote assets from trading pair
         if '-' in trading_pair:
-            base_asset, quote_asset = trading_pair.split('-')
+            base_asset, quote_asset = trading_pair.split('-', 1)
         else:
-            # Assume format like BTCUSDT
-            base_asset = trading_pair[:-4] if trading_pair.endswith('USDT') else trading_pair[:-3]
-            quote_asset = trading_pair[len(base_asset):]
+            # Parse trading pair format like BTCUSDT, ETHUSDC, etc.
+            # Check for common 4-char quote currencies first (most specific)
+            if trading_pair.endswith(('USDT', 'USDC', 'BUSD', 'TUSD')):
+                base_asset = trading_pair[:-4]
+                quote_asset = trading_pair[-4:]
+            # Then check common 3-char quote currencies
+            elif trading_pair.endswith(('USD', 'EUR', 'GBP', 'JPY', 'BTC', 'ETH', 'BNB', 'DAI')):
+                base_asset = trading_pair[:-3]
+                quote_asset = trading_pair[-3:]
+            # Fallback: assume 3-char quote (least common)
+            else:
+                base_asset = trading_pair[:-3] if len(trading_pair) > 3 else ''
+                quote_asset = trading_pair[-3:] if len(trading_pair) > 3 else trading_pair
         
         # Borrow costs for leveraged positions
         if leverage_long > Decimal("1"):

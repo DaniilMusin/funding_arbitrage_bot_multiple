@@ -237,34 +237,38 @@ class RiskManager:
         
         return can_open, all_messages, risk_level
     
-    def check_liquidity_risk(self, 
-                           exchange: str, 
+    def check_liquidity_risk(self,
+                           exchange: str,
                            trading_pair: str,
                            notional_amount: Decimal) -> Tuple[bool, str, Decimal]:
         """
         Check liquidity risk for a position size.
-        
+
         Returns:
             Tuple of (is_acceptable, reason, impact_score)
         """
         liquidity = self.liquidity_cache.get(f"{exchange}_{trading_pair}")
-        
+
         if not liquidity:
             return False, "No liquidity data available", Decimal('1.0')
-        
+
         # Check if position size fits within available liquidity
         available_liquidity = min(liquidity.bid_depth_1pct, liquidity.ask_depth_1pct)
-        
+
+        # CRITICAL FIX: Check for zero liquidity to avoid division by zero
+        if available_liquidity == 0:
+            return False, "No liquidity available (zero depth)", Decimal('1.0')
+
         if notional_amount > available_liquidity * Decimal('0.8'):  # Use max 80% of available
             return False, f"Position size {notional_amount} exceeds safe liquidity limit {available_liquidity * Decimal('0.8')}", Decimal('1.0')
-        
+
         # Calculate impact score
         impact_ratio = notional_amount / available_liquidity
         impact_score = min(impact_ratio * Decimal('2'), Decimal('1.0'))
-        
+
         if impact_score > Decimal('0.5'):
             return False, f"High market impact expected: {impact_score:.2%}", impact_score
-        
+
         return True, f"Acceptable liquidity risk: {impact_score:.2%} impact", impact_score
     
     def add_position(self, position: PositionInfo) -> str:
@@ -287,11 +291,30 @@ class RiskManager:
         if position_id in self.positions:
             position = self.positions[position_id]
             del self.positions[position_id]
-            
+
             if position_id in self.hedge_pairs[position.trading_pair]:
                 self.hedge_pairs[position.trading_pair].remove(position_id)
-                
+
             logger.info(f"Removed position {position_id}")
+
+    def remove_position_by_exchange_pair(self, exchange: str, trading_pair: str):
+        """
+        Remove all positions matching exchange and trading pair.
+
+        Args:
+            exchange: Exchange name
+            trading_pair: Trading pair symbol
+        """
+        to_remove = [
+            pos_id for pos_id, pos in self.positions.items()
+            if pos.exchange == exchange and pos.trading_pair == trading_pair
+        ]
+
+        for pos_id in to_remove:
+            self.remove_position(pos_id)
+
+        if to_remove:
+            logger.info(f"Removed {len(to_remove)} positions for {exchange}/{trading_pair}")
     
     def update_liquidity_metrics(self, metrics: LiquidityMetrics):
         """Update liquidity metrics for an exchange/pair."""
@@ -336,6 +359,7 @@ class RiskManager:
                     
                     gap_amount = abs(long_notional - short_notional)
                     larger_position = max(long_notional, short_notional)
+                    # CRITICAL FIX: Ensure we don't divide by zero
                     gap_percentage = gap_amount / larger_position if larger_position > 0 else Decimal('0')
                     
                     gap = HedgeGap(
@@ -438,22 +462,34 @@ class RiskManager:
     def _get_limit_utilization(self) -> Dict[str, Decimal]:
         """Get utilization percentage for each risk limit."""
         utilization = {}
-        
+
         # Exchange limits
         for exchange in set(pos.exchange for pos in self.positions.values()):
             exchange_notional = self._get_exchange_notional(exchange)
             limit = self.risk_limits[LimitType.NOTIONAL_PER_EXCHANGE].max_value
-            utilization[f"exchange_{exchange}"] = exchange_notional / limit
-        
+            # CRITICAL FIX: Avoid division by zero
+            if limit > 0:
+                utilization[f"exchange_{exchange}"] = exchange_notional / limit
+            else:
+                utilization[f"exchange_{exchange}"] = Decimal('0')
+
         # Total notional
         total_notional = self._get_total_notional()
         total_limit = self.risk_limits[LimitType.TOTAL_NOTIONAL].max_value
-        utilization["total_notional"] = total_notional / total_limit
-        
+        # CRITICAL FIX: Avoid division by zero
+        if total_limit > 0:
+            utilization["total_notional"] = total_notional / total_limit
+        else:
+            utilization["total_notional"] = Decimal('0')
+
         # Concentration
         concentrations = self._get_pair_concentrations()
         concentration_limit = self.risk_limits[LimitType.CONCENTRATION].max_value
         for pair, concentration in concentrations.items():
-            utilization[f"concentration_{pair}"] = concentration / concentration_limit
-        
+            # CRITICAL FIX: Avoid division by zero
+            if concentration_limit > 0:
+                utilization[f"concentration_{pair}"] = concentration / concentration_limit
+            else:
+                utilization[f"concentration_{pair}"] = Decimal('0')
+
         return utilization

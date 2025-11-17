@@ -132,18 +132,18 @@ class FundingScheduler:
         
         schedules['kucoin_perpetual'] = schedules['kucoin']
         
-        # Hyperliquid: 00:00, 08:00, 16:00 UTC (assuming same as others)
+        # Hyperliquid: HOURLY funding (every hour at :00)
         schedules['hyperliquid'] = ExchangeSchedule(
             exchange_name='hyperliquid',
             settlement_times=[
-                SettlementTime(0, 0, 'UTC'),
-                SettlementTime(8, 0, 'UTC'),
-                SettlementTime(16, 0, 'UTC'),
+                SettlementTime(hour, 0, 'UTC') for hour in range(24)
             ],
-            pre_settlement_buffer_minutes=5,
-            post_settlement_delay_minutes=3,
+            pre_settlement_buffer_minutes=3,  # Close 3 min before hourly settlement
+            post_settlement_delay_minutes=2,
         )
-        
+
+        schedules['hyperliquid_perpetual'] = schedules['hyperliquid']
+
         return schedules
     
     def get_settlement_status(self, 
@@ -394,7 +394,12 @@ class FundingScheduler:
         
         if now_safe:
             # Find how long current window lasts
-            next_restriction = min(start for start, _ in all_settlements if start > current_time)
+            future_starts = [start for start, _ in all_settlements if start > current_time]
+            if not future_starts:
+                # No more settlements in near future, use large window
+                return current_time, 480  # 8 hours default
+
+            next_restriction = min(future_starts)
             duration = int((next_restriction - current_time).total_seconds() / 60)
             return current_time, duration
         

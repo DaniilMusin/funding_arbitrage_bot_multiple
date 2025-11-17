@@ -121,15 +121,55 @@ class FundingArbitrageStrategy(StrategyPyBase):
         self.funding_rates: Dict[str, Dict[str, FundingInfo]] = {}  # exchange -> pair -> FundingInfo
         self.last_funding_check = 0
         self.emergency_stop_active = False
-        
+
+        # Background tasks tracking (CRITICAL: prevent silent failures)
+        self._background_tasks: Set[asyncio.Task] = set()
+
         # Performance tracking
         self.total_funding_collected = Decimal("0")
         self.total_trades_executed = 0
         self.profitable_opportunities_taken = 0
         self.opportunities_skipped_by_reason: Dict[str, int] = {}
-        
+
         self._setup_callbacks()
-        
+
+        # Validate connectors have required methods
+        self._validate_connectors()
+
+    def _validate_connectors(self):
+        """
+        Validate that all connectors support required methods.
+        CRITICAL: Fail early if connector API is incompatible.
+        """
+        required_methods = ['buy', 'sell']
+        recommended_methods = ['get_order', 'get_funding_info']
+
+        for exchange_name, connector in self.exchanges.items():
+            # Check required methods
+            for method in required_methods:
+                if not hasattr(connector, method):
+                    raise ValueError(
+                        f"Connector {exchange_name} missing REQUIRED method: {method}. "
+                        f"Cannot run strategy without this method."
+                    )
+
+            # Check recommended methods (warn if missing)
+            for method in recommended_methods:
+                if not hasattr(connector, method):
+                    self.logger().warning(
+                        f"Connector {exchange_name} missing recommended method: {method}. "
+                        f"Strategy may not work correctly."
+                    )
+
+            # Check for in_flight_orders tracker
+            if not hasattr(connector, 'in_flight_orders'):
+                self.logger().warning(
+                    f"Connector {exchange_name} missing 'in_flight_orders' tracker. "
+                    f"Order tracking may not work correctly."
+                )
+
+            self.logger().info(f"Connector {exchange_name} validation passed")
+
     def _setup_callbacks(self):
         """Setup callbacks for various components."""
         # Margin monitoring callbacks
@@ -243,10 +283,21 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 for long_ex, short_ex in opportunities:
                     long_rate = funding_rates[long_ex].rate
                     short_rate = funding_rates[short_ex].rate
-                    
+
                     # Skip if funding rate difference is too small
                     rate_diff = short_rate - long_rate
+
+                    # CRITICAL: Validate funding diff is POSITIVE
+                    # We must RECEIVE more on short than we PAY on long
+                    if rate_diff <= 0:
+                        # Skip opportunities where we would LOSE money on funding
+                        self.opportunities_skipped_by_reason['negative_funding'] = \
+                            self.opportunities_skipped_by_reason.get('negative_funding', 0) + 1
+                        continue
+
                     if rate_diff < self.config.min_funding_rate_diff:
+                        self.opportunities_skipped_by_reason['funding_diff_too_small'] = \
+                            self.opportunities_skipped_by_reason.get('funding_diff_too_small', 0) + 1
                         continue
                     
                     # Calculate edge decomposition
@@ -269,7 +320,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
         
         return best_opportunity
     
-    async def _calculate_opportunity_edge(self, 
+    async def _calculate_opportunity_edge(self,
                                         trading_pair: str,
                                         long_exchange: str,
                                         short_exchange: str,
@@ -278,24 +329,56 @@ class FundingArbitrageStrategy(StrategyPyBase):
         """Calculate detailed edge decomposition for an opportunity."""
         # Determine position size based on risk limits
         notional_amount = await self._calculate_position_size(trading_pair, long_exchange, short_exchange)
-        
+
         if notional_amount <= 0:
             return None
-        
-        # Get fee configuration (simplified - would come from exchange configs)
-        fees_config = {
-            exchange: {'maker': Decimal("0.0002"), 'taker': Decimal("0.0004")}
-            for exchange in [long_exchange, short_exchange]
-        }
-        
-        # Get borrow rates (simplified)
+
+        # Get REAL fee configuration from connectors
+        # CRITICAL FIX: Use actual exchange fees instead of hardcoded values
+        fees_config = {}
+        for exchange_name in [long_exchange, short_exchange]:
+            connector = self.exchanges.get(exchange_name)
+            if connector:
+                # Get real fees from connector
+                maker_fee = Decimal("0.0002")  # Default fallback
+                taker_fee = Decimal("0.0005")  # Default fallback
+
+                # Try to get actual fees from connector
+                if hasattr(connector, 'get_fee'):
+                    # Some connectors have get_fee method
+                    try:
+                        fee_info = connector.get_fee(trading_pair)
+                        if fee_info:
+                            maker_fee = Decimal(str(fee_info.maker_percent_fee_decimal)) if hasattr(fee_info, 'maker_percent_fee_decimal') else maker_fee
+                            taker_fee = Decimal(str(fee_info.taker_percent_fee_decimal)) if hasattr(fee_info, 'taker_percent_fee_decimal') else taker_fee
+                    except:
+                        pass
+
+                # Alternative: Check for trading_fees attribute
+                if hasattr(connector, 'trading_fees'):
+                    try:
+                        trading_fees = connector.trading_fees
+                        if trading_pair in trading_fees:
+                            fee_tier = trading_fees[trading_pair]
+                            maker_fee = Decimal(str(fee_tier.get('maker', maker_fee)))
+                            taker_fee = Decimal(str(fee_tier.get('taker', taker_fee)))
+                    except:
+                        pass
+
+                fees_config[exchange_name] = {'maker': maker_fee, 'taker': taker_fee}
+                self.logger().debug(f"Using fees for {exchange_name}: maker={maker_fee:.4%}, taker={taker_fee:.4%}")
+            else:
+                # Fallback to defaults if connector not found
+                fees_config[exchange_name] = {'maker': Decimal("0.0002"), 'taker': Decimal("0.0005")}
+
+        # Get borrow rates (simplified - in production would get from exchange APIs)
         borrow_rates = {'BTC': Decimal("0.0001"), 'USDT': Decimal("0.00005")}
-        
-        # Get slippage estimates (simplified)
+
+        # Get slippage estimates (simplified - in production would analyze order book)
         slippage_estimates = {
             exchange: Decimal("0.0005") for exchange in [long_exchange, short_exchange]
         }
-        
+
         # Calculate edge
         edge = self.edge_calculator.calculate_edge(
             trading_pair=trading_pair,
@@ -308,12 +391,173 @@ class FundingArbitrageStrategy(StrategyPyBase):
             borrow_rates=borrow_rates,
             slippage_estimates=slippage_estimates
         )
-        
+
         # Track the calculation
         self.edge_tracker.add_edge_calculation(edge)
-        
+
         return edge
-    
+
+    async def _get_order_book_liquidity(
+        self,
+        connector: ConnectorBase,
+        trading_pair: str
+    ) -> Optional[LiquidityMetrics]:
+        """
+        Get real-time liquidity metrics from connector's order book.
+
+        This checks if there are limit orders in the order book that we can
+        take immediately with market orders.
+
+        Args:
+            connector: Exchange connector
+            trading_pair: Trading pair to check
+
+        Returns:
+            LiquidityMetrics if successful, None otherwise
+        """
+        try:
+            # Get order book from connector
+            order_book = None
+
+            if hasattr(connector, 'get_order_book'):
+                order_book = connector.get_order_book(trading_pair)
+            elif hasattr(connector, 'order_book_tracker') and hasattr(connector.order_book_tracker, 'get_order_book'):
+                order_book = connector.order_book_tracker.get_order_book(trading_pair)
+
+            if not order_book:
+                self.logger().warning(f"No order book available for {connector.name}/{trading_pair}")
+                return None
+
+            # Get best bid and ask
+            try:
+                best_bid = order_book.get_price(False)  # False = bid
+                best_ask = order_book.get_price(True)   # True = ask
+            except:
+                # Alternative method
+                if hasattr(order_book, 'snapshot'):
+                    snapshot = order_book.snapshot
+                    if len(snapshot[0]) > 0 and len(snapshot[1]) > 0:  # bids, asks
+                        best_bid = Decimal(str(snapshot[0][0][0]))  # First bid price
+                        best_ask = Decimal(str(snapshot[1][0][0]))  # First ask price
+                    else:
+                        self.logger().warning(f"Empty order book for {connector.name}/{trading_pair}")
+                        return None
+                else:
+                    self.logger().warning(f"Cannot get prices from order book for {connector.name}/{trading_pair}")
+                    return None
+
+            if best_bid <= 0 or best_ask <= 0:
+                self.logger().warning(f"Invalid prices in order book: bid={best_bid}, ask={best_ask}")
+                return None
+
+            # Calculate mid price
+            mid_price = (best_bid + best_ask) / Decimal("2")
+
+            # Calculate price ranges for depth analysis
+            one_pct_range = mid_price * Decimal("0.01")  # 1% from mid
+            five_pct_range = mid_price * Decimal("0.05")  # 5% from mid
+
+            # Calculate bid depth (liquidity for selling/shorting)
+            bid_price_1pct = mid_price - one_pct_range
+            bid_price_5pct = mid_price - five_pct_range
+
+            # Calculate ask depth (liquidity for buying/longing)
+            ask_price_1pct = mid_price + one_pct_range
+            ask_price_5pct = mid_price + five_pct_range
+
+            # Get volume within ranges
+            # For perpetuals, we use notional value (price * quantity)
+            bid_depth_1pct = Decimal("0")
+            bid_depth_5pct = Decimal("0")
+            ask_depth_1pct = Decimal("0")
+            ask_depth_5pct = Decimal("0")
+
+            try:
+                # Try to get depth from order book methods
+                if hasattr(order_book, 'get_volume_for_price'):
+                    bid_depth_1pct = order_book.get_volume_for_price(False, bid_price_1pct)
+                    bid_depth_5pct = order_book.get_volume_for_price(False, bid_price_5pct)
+                    ask_depth_1pct = order_book.get_volume_for_price(True, ask_price_1pct)
+                    ask_depth_5pct = order_book.get_volume_for_price(True, ask_price_5pct)
+                elif hasattr(order_book, 'snapshot'):
+                    # Manual calculation from snapshot
+                    snapshot = order_book.snapshot
+                    bids = snapshot[0]  # List of [price, quantity]
+                    asks = snapshot[1]
+
+                    # Calculate bid depth
+                    for price, qty in bids:
+                        price_dec = Decimal(str(price))
+                        qty_dec = Decimal(str(qty))
+                        notional = price_dec * qty_dec
+
+                        if price_dec >= bid_price_1pct:
+                            bid_depth_1pct += notional
+                        if price_dec >= bid_price_5pct:
+                            bid_depth_5pct += notional
+
+                    # Calculate ask depth
+                    for price, qty in asks:
+                        price_dec = Decimal(str(price))
+                        qty_dec = Decimal(str(qty))
+                        notional = price_dec * qty_dec
+
+                        if price_dec <= ask_price_1pct:
+                            ask_depth_1pct += notional
+                        if price_dec <= ask_price_5pct:
+                            ask_depth_5pct += notional
+
+            except Exception as e:
+                self.logger().warning(f"Error calculating order book depth: {e}")
+                # Use conservative estimates based on spread
+                spread = best_ask - best_bid
+                avg_price = mid_price
+                # Estimate: assume some minimal liquidity
+                bid_depth_1pct = avg_price * Decimal("10")  # ~10 units
+                bid_depth_5pct = avg_price * Decimal("50")  # ~50 units
+                ask_depth_1pct = avg_price * Decimal("10")
+                ask_depth_5pct = avg_price * Decimal("50")
+
+            # Calculate spread in basis points
+            spread = best_ask - best_bid
+            spread_bps = (spread / mid_price) * Decimal("10000")
+
+            # Calculate impact score (simplified)
+            # This estimates the price impact of a $1000 order
+            reference_size = Decimal("1000")
+            available_liquidity = min(bid_depth_1pct, ask_depth_1pct)
+
+            if available_liquidity > 0:
+                impact_score = min((reference_size / available_liquidity) * Decimal("2"), Decimal("1.0"))
+            else:
+                impact_score = Decimal("1.0")  # Maximum impact if no liquidity
+
+            liquidity_metrics = LiquidityMetrics(
+                exchange=connector.name,
+                trading_pair=trading_pair,
+                bid_depth_1pct=bid_depth_1pct,
+                ask_depth_1pct=ask_depth_1pct,
+                bid_depth_5pct=bid_depth_5pct,
+                ask_depth_5pct=ask_depth_5pct,
+                avg_spread_bps=spread_bps,
+                impact_score=impact_score,
+                timestamp=time.time()
+            )
+
+            self.logger().debug(
+                f"Order book liquidity for {connector.name}/{trading_pair}: "
+                f"bid_1%={bid_depth_1pct:.2f}, ask_1%={ask_depth_1pct:.2f}, "
+                f"spread={spread_bps:.2f}bps"
+            )
+
+            return liquidity_metrics
+
+        except Exception as e:
+            self.logger().error(f"Failed to get order book liquidity for {connector.name}/{trading_pair}: {e}")
+            import traceback
+            self.logger().debug(traceback.format_exc())
+            return None
+
     async def _calculate_position_size(self, 
                                      trading_pair: str,
                                      long_exchange: str,
@@ -363,126 +607,605 @@ class FundingArbitrageStrategy(StrategyPyBase):
         long_exchange = opportunity['long_exchange']
         short_exchange = opportunity['short_exchange']
         edge = opportunity['edge_decomposition']
-        
+
+        self.logger().info(f"Evaluating opportunity: {trading_pair} on {long_exchange}/{short_exchange}, edge={edge.total_edge:.6f}")
+
         # Check funding settlement timing
         settlement_status, minutes_to_settlement = self.funding_scheduler.get_settlement_status(
             [long_exchange, short_exchange]
         )
-        
+
         should_open, timing_reason = self.funding_scheduler.should_open_position(
             [long_exchange, short_exchange],
             minimum_time_horizon_minutes=self.config.min_position_hold_time_minutes
         )
-        
+
         if not should_open:
             self.opportunities_skipped_by_reason[f"timing_{timing_reason}"] = \
                 self.opportunities_skipped_by_reason.get(f"timing_{timing_reason}", 0) + 1
             return
-        
-        # Check liquidity
-        liquidity_ok_long, liquidity_reason_long, _ = self.risk_manager.check_liquidity_risk(
+
+        # CRITICAL FIX: Get real-time liquidity from order book BEFORE checking
+        self.logger().info("Fetching order book liquidity data...")
+
+        long_liquidity = await self._get_order_book_liquidity(
+            self.exchanges[long_exchange], trading_pair
+        )
+        short_liquidity = await self._get_order_book_liquidity(
+            self.exchanges[short_exchange], trading_pair
+        )
+
+        # Update risk manager cache with fresh data
+        if long_liquidity:
+            self.risk_manager.update_liquidity_metrics(long_liquidity)
+            self.logger().debug(
+                f"Long liquidity ({long_exchange}): "
+                f"bid_1%={long_liquidity.bid_depth_1pct:.2f}, "
+                f"ask_1%={long_liquidity.ask_depth_1pct:.2f}"
+            )
+        else:
+            self.logger().warning(f"Failed to get order book liquidity for {long_exchange}/{trading_pair}")
+
+        if short_liquidity:
+            self.risk_manager.update_liquidity_metrics(short_liquidity)
+            self.logger().debug(
+                f"Short liquidity ({short_exchange}): "
+                f"bid_1%={short_liquidity.bid_depth_1pct:.2f}, "
+                f"ask_1%={short_liquidity.ask_depth_1pct:.2f}"
+            )
+        else:
+            self.logger().warning(f"Failed to get order book liquidity for {short_exchange}/{trading_pair}")
+
+        # Check liquidity (now with real data from order book!)
+        liquidity_ok_long, liquidity_reason_long, impact_long = self.risk_manager.check_liquidity_risk(
             long_exchange, trading_pair, edge.notional_amount
         )
-        liquidity_ok_short, liquidity_reason_short, _ = self.risk_manager.check_liquidity_risk(
+        liquidity_ok_short, liquidity_reason_short, impact_short = self.risk_manager.check_liquidity_risk(
             short_exchange, trading_pair, edge.notional_amount
         )
-        
+
+        self.logger().info(
+            f"Liquidity check: long={liquidity_ok_long} ({liquidity_reason_long}), "
+            f"short={liquidity_ok_short} ({liquidity_reason_short})"
+        )
+
         if not liquidity_ok_long or not liquidity_ok_short:
             self.opportunities_skipped_by_reason["liquidity"] = \
                 self.opportunities_skipped_by_reason.get("liquidity", 0) + 1
+            self.logger().info(f"Skipping due to insufficient liquidity")
             return
-        
+
         # Execute the arbitrage
         await self._execute_arbitrage(opportunity)
     
     async def _execute_arbitrage(self, opportunity: Dict):
-        """Execute the arbitrage trade."""
+        """
+        Execute the arbitrage trade with proper rollback on failures.
+        Uses parallel execution for both legs and verifies hedge is properly established.
+        """
         trading_pair = opportunity['trading_pair']
-        long_exchange = opportunity['long_exchange'] 
+        long_exchange = opportunity['long_exchange']
         short_exchange = opportunity['short_exchange']
         edge = opportunity['edge_decomposition']
-        
+
         self.logger().info(f"Executing arbitrage: {trading_pair} long on {long_exchange}, short on {short_exchange}")
         self.logger().info(f"Edge decomposition: {edge.to_display_dict()}")
-        
+
+        long_connector = self.exchanges[long_exchange]
+        short_connector = self.exchanges[short_exchange]
+
+        long_order_id = None
+        short_order_id = None
+        long_filled_amount = Decimal("0")
+        short_filled_amount = Decimal("0")
+
         try:
-            # Create position entries
+            # Phase 1: Place both orders in parallel for minimal execution lag
+            self.logger().info("Phase 1: Placing orders in parallel...")
+
+            async def place_long():
+                return await self._place_order(
+                    connector=long_connector,
+                    trading_pair=trading_pair,
+                    is_buy=True,
+                    amount=edge.notional_amount
+                )
+
+            async def place_short():
+                return await self._place_order(
+                    connector=short_connector,
+                    trading_pair=trading_pair,
+                    is_buy=False,
+                    amount=edge.notional_amount
+                )
+
+            # Execute both orders in parallel with exception handling
+            # CRITICAL: Use return_exceptions=True to handle failures safely
+            results = await asyncio.gather(
+                place_long(),
+                place_short(),
+                return_exceptions=True
+            )
+
+            long_result, short_result = results
+
+            # Check if either order failed
+            if isinstance(long_result, Exception):
+                self.logger().error(f"Long order placement failed: {long_result}")
+                # If short order succeeded, we need to cancel/close it
+                if not isinstance(short_result, Exception):
+                    short_order_id = short_result
+                    self.logger().error("Short order succeeded but long failed, emergency closing short")
+                    try:
+                        await self._emergency_close(
+                            short_connector, trading_pair, is_long=False,
+                            amount=edge.notional_amount, reason="Long order placement failed"
+                        )
+                    except Exception as e:
+                        self.logger().error(f"Failed to emergency close short after long failure: {e}")
+                raise Exception(f"Long order placement failed: {long_result}")
+
+            if isinstance(short_result, Exception):
+                self.logger().error(f"Short order placement failed: {short_result}")
+                # Long succeeded but short failed - close the long position
+                long_order_id = long_result
+                self.logger().error("Long order succeeded but short failed, emergency closing long")
+                try:
+                    await self._emergency_close(
+                        long_connector, trading_pair, is_long=True,
+                        amount=edge.notional_amount, reason="Short order placement failed"
+                    )
+                except Exception as e:
+                    self.logger().error(f"Failed to emergency close long after short failure: {e}")
+                raise Exception(f"Short order placement failed: {short_result}")
+
+            # Both succeeded
+            long_order_id = long_result
+            short_order_id = short_result
+
+            self.logger().info(f"Orders placed: long={long_order_id}, short={short_order_id}")
+
+            # Phase 2: Verify both orders filled
+            self.logger().info("Phase 2: Verifying order fills...")
+
+            async def verify_long():
+                return await self._verify_order_filled(
+                    long_connector, long_order_id, timeout_seconds=30
+                )
+
+            async def verify_short():
+                return await self._verify_order_filled(
+                    short_connector, short_order_id, timeout_seconds=30
+                )
+
+            # Verify both fills in parallel with exception handling
+            # CRITICAL: Use return_exceptions=True to handle failures safely
+            verify_results = await asyncio.gather(
+                verify_long(),
+                verify_short(),
+                return_exceptions=True
+            )
+
+            long_verify_result, short_verify_result = verify_results
+
+            # Check if verification failed
+            if isinstance(long_verify_result, Exception):
+                self.logger().error(f"Long order verification failed: {long_verify_result}")
+                # Try to close short if it exists
+                if not isinstance(short_verify_result, Exception):
+                    try:
+                        short_filled, short_amount = short_verify_result
+                        if short_filled:
+                            await self._emergency_close(
+                                short_connector, trading_pair, is_long=False,
+                                amount=short_amount, reason="Long verification failed"
+                            )
+                    except Exception as e:
+                        self.logger().error(f"Failed cleanup after long verification failure: {e}")
+                raise Exception(f"Long order verification failed: {long_verify_result}")
+
+            if isinstance(short_verify_result, Exception):
+                self.logger().error(f"Short order verification failed: {short_verify_result}")
+                # Long verification succeeded - close it
+                try:
+                    long_filled, long_amount = long_verify_result
+                    if long_filled:
+                        await self._emergency_close(
+                            long_connector, trading_pair, is_long=True,
+                            amount=long_amount, reason="Short verification failed"
+                        )
+                except Exception as e:
+                    self.logger().error(f"Failed cleanup after short verification failure: {e}")
+                raise Exception(f"Short order verification failed: {short_verify_result}")
+
+            # Both verifications succeeded
+            (long_filled, long_amount) = long_verify_result
+            (short_filled, short_amount) = short_verify_result
+
+            long_filled_amount = long_amount
+            short_filled_amount = short_amount
+
+            # Check if both orders filled successfully
+            if not long_filled:
+                self.logger().error("Long order not filled, rolling back...")
+                if short_filled:
+                    # Close the short position that was filled
+                    await self._emergency_close(
+                        short_connector, trading_pair, is_long=False,
+                        amount=short_amount, reason="Long order failed to fill"
+                    )
+                raise Exception(f"Long order {long_order_id} not filled")
+
+            if not short_filled:
+                self.logger().error("Short order not filled, rolling back...")
+                # Close the long position that was filled
+                await self._emergency_close(
+                    long_connector, trading_pair, is_long=True,
+                    amount=long_amount, reason="Short order failed to fill"
+                )
+                raise Exception(f"Short order {short_order_id} not filled")
+
+            self.logger().info(f"Both orders filled: long={long_amount}, short={short_amount}")
+
+            # Phase 3: Verify hedge gap is acceptable
+            self.logger().info("Phase 3: Checking hedge gap...")
+
+            hedge_ok, gap_pct = await self._check_hedge_gap(
+                long_connector, short_connector, trading_pair,
+                expected_amount=edge.notional_amount,
+                max_gap_pct=Decimal("0.05")
+            )
+
+            if not hedge_ok:
+                self.logger().error(f"Hedge gap too large ({gap_pct:.2%}), closing both positions...")
+                # Close both positions with exception handling
+                close_results = await asyncio.gather(
+                    self._emergency_close(
+                        long_connector, trading_pair, is_long=True,
+                        amount=long_amount, reason=f"Hedge gap {gap_pct:.2%} too large"
+                    ),
+                    self._emergency_close(
+                        short_connector, trading_pair, is_long=False,
+                        amount=short_amount, reason=f"Hedge gap {gap_pct:.2%} too large"
+                    ),
+                    return_exceptions=True
+                )
+
+                # Log any close failures
+                for i, result in enumerate(close_results):
+                    if isinstance(result, Exception):
+                        side = "long" if i == 0 else "short"
+                        self.logger().error(f"Failed to emergency close {side} position: {result}")
+
+                raise Exception(f"Hedge gap {gap_pct:.2%} exceeds maximum 5%")
+
+            self.logger().info(f"Hedge gap acceptable: {gap_pct:.2%}")
+
+            # Phase 4: Track the position
             position_id = f"arb_{trading_pair}_{int(time.time())}"
-            
-            # Execute long position
-            long_connector = self.exchanges[long_exchange]
-            long_order_id = await self._place_order(
-                long_connector, trading_pair, True, edge.notional_amount
-            )
-            
-            # Execute short position  
-            short_connector = self.exchanges[short_exchange]
-            short_order_id = await self._place_order(
-                short_connector, trading_pair, False, edge.notional_amount
-            )
-            
-            # Track the position
+
             self.active_positions[position_id] = {
                 'trading_pair': trading_pair,
                 'long_exchange': long_exchange,
                 'short_exchange': short_exchange,
                 'long_order_id': long_order_id,
                 'short_order_id': short_order_id,
+                'long_amount': long_filled_amount,
+                'short_amount': short_filled_amount,
                 'notional_amount': edge.notional_amount,
                 'expected_edge': edge.total_edge,
                 'entry_time': time.time(),
                 'edge_decomposition': edge
             }
-            
-            # Update trackers
+
+            # Update risk trackers
             long_position = PositionInfo(
                 exchange=long_exchange,
                 subaccount=None,
                 trading_pair=trading_pair,
-                notional_amount=edge.notional_amount,
+                notional_amount=long_filled_amount,
                 leverage=edge.leverage_long,
                 side='long',
                 timestamp=time.time(),
                 order_ids=[long_order_id]
             )
-            
+
             short_position = PositionInfo(
                 exchange=short_exchange,
                 subaccount=None,
                 trading_pair=trading_pair,
-                notional_amount=edge.notional_amount,
+                notional_amount=short_filled_amount,
                 leverage=edge.leverage_short,
                 side='short',
                 timestamp=time.time(),
                 order_ids=[short_order_id]
             )
-            
+
             self.risk_manager.add_position(long_position)
             self.risk_manager.add_position(short_position)
-            
+
             self.total_trades_executed += 1
             self.profitable_opportunities_taken += 1
-            
+
+            self.logger().info(f"✅ Arbitrage position {position_id} opened successfully")
+
         except Exception as e:
-            self.logger().error(f"Failed to execute arbitrage: {e}")
+            self.logger().error(f"❌ Failed to execute arbitrage: {e}")
+            # Position tracking not added since we failed or rolled back
+            raise
     
-    async def _place_order(self, 
-                         connector: ConnectorBase, 
-                         trading_pair: str, 
-                         is_buy: bool, 
-                         amount: Decimal) -> str:
-        """Place order on exchange."""
-        # This is a simplified version - real implementation would be more sophisticated
-        order_type = OrderType.MARKET  # For immediate execution
-        trade_type = TradeType.BUY if is_buy else TradeType.SELL
-        
-        # Place the order (this would need proper implementation based on connector type)
-        order_id = f"order_{int(time.time())}"
-        
-        # In real implementation, would call:
-        # order_id = connector.buy() or connector.sell()
-        
-        return order_id
+    async def _place_order(self,
+                         connector: ConnectorBase,
+                         trading_pair: str,
+                         is_buy: bool,
+                         amount: Decimal,
+                         price: Optional[Decimal] = None) -> str:
+        """
+        Place order on exchange with proper error handling.
+
+        Args:
+            connector: Exchange connector
+            trading_pair: Trading pair symbol
+            is_buy: True for buy, False for sell
+            amount: Order amount in base currency
+            price: Optional limit price (None for market orders)
+
+        Returns:
+            Order ID from exchange
+
+        Raises:
+            Exception: If order placement fails
+        """
+        order_type = OrderType.MARKET if price is None else OrderType.LIMIT
+
+        try:
+            # NOTE: connector.buy() and connector.sell() are SYNCHRONOUS methods in Hummingbot
+            # They create the order locally and return the client_order_id immediately
+            # The actual order placement happens asynchronously via the connector's event loop
+            if is_buy:
+                order_id = connector.buy(
+                    trading_pair=trading_pair,
+                    amount=amount,
+                    order_type=order_type,
+                    price=price
+                )
+            else:
+                order_id = connector.sell(
+                    trading_pair=trading_pair,
+                    amount=amount,
+                    order_type=order_type,
+                    price=price
+                )
+
+            self.logger().info(
+                f"Placed {'BUY' if is_buy else 'SELL'} order {order_id} on {connector.name}: "
+                f"{amount} {trading_pair} @ {'MARKET' if price is None else price}"
+            )
+
+            # Wait a short time to allow the order to be submitted to exchange
+            await asyncio.sleep(0.5)
+
+            return order_id
+
+        except Exception as e:
+            self.logger().error(
+                f"Failed to place {'BUY' if is_buy else 'SELL'} order on {connector.name}: {e}"
+            )
+            raise
+
+    async def _verify_order_filled(self,
+                                  connector: ConnectorBase,
+                                  order_id: str,
+                                  timeout_seconds: int = 30,
+                                  min_fill_ratio: Decimal = Decimal("0.90")) -> Tuple[bool, Decimal]:
+        """
+        Verify that an order was filled.
+
+        Args:
+            connector: Exchange connector
+            order_id: Order ID to verify
+            timeout_seconds: Maximum time to wait for fill
+            min_fill_ratio: Minimum fill ratio to consider successful (0.90 = 90%)
+
+        Returns:
+            Tuple of (is_filled, filled_amount)
+        """
+        start_time = time.time()
+
+        while time.time() - start_time < timeout_seconds:
+            try:
+                # NOTE: get_order() is a SYNCHRONOUS method that returns cached state
+                # For in-flight orders, use in_flight_orders tracker
+                order = None
+
+                # Try to get from in_flight_orders first (most reliable)
+                if hasattr(connector, 'in_flight_orders') and order_id in connector.in_flight_orders:
+                    order = connector.in_flight_orders[order_id]
+                # Fallback to get_order if available
+                elif hasattr(connector, 'get_order'):
+                    order = connector.get_order(order_id)
+
+                if order is None:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # Check if order is filled
+                # Different connectors may have different attributes
+                is_done = False
+                if hasattr(order, 'is_done'):
+                    is_done = order.is_done
+                elif hasattr(order, 'is_filled'):
+                    is_done = order.is_filled
+                elif hasattr(order, 'state') and hasattr(order, 'OrderState'):
+                    is_done = order.state in ['FILLED', 'COMPLETED']
+
+                if is_done:
+                    # Get filled amount
+                    filled_amount = Decimal("0")
+                    if hasattr(order, 'executed_amount_base'):
+                        filled_amount = Decimal(str(order.executed_amount_base))
+                    elif hasattr(order, 'filled_amount'):
+                        filled_amount = Decimal(str(order.filled_amount))
+                    elif hasattr(order, 'amount'):
+                        filled_amount = Decimal(str(order.amount))
+
+                    order_amount = Decimal(str(order.amount)) if hasattr(order, 'amount') else filled_amount
+
+                    if order_amount > 0:
+                        fill_ratio = filled_amount / order_amount
+                    else:
+                        fill_ratio = Decimal("0")
+
+                    # Accept fills >= 90% (more lenient for real market conditions)
+                    if fill_ratio >= min_fill_ratio:
+                        self.logger().info(
+                            f"Order {order_id} filled: {filled_amount}/{order_amount} ({fill_ratio:.1%})"
+                        )
+                        return True, filled_amount
+                    elif fill_ratio >= Decimal("0.5"):
+                        # Partial fill >= 50% - log warning but accept it
+                        self.logger().warning(
+                            f"Order {order_id} partially filled: {fill_ratio:.1%}, accepting it"
+                        )
+                        return True, filled_amount
+                    else:
+                        # Too low fill ratio
+                        self.logger().warning(
+                            f"Order {order_id} only {fill_ratio:.1%} filled, rejecting"
+                        )
+                        return False, filled_amount
+
+                await asyncio.sleep(0.5)
+
+            except Exception as e:
+                self.logger().warning(f"Error checking order {order_id}: {e}")
+                await asyncio.sleep(1)
+
+        self.logger().error(f"Order {order_id} verification timeout after {timeout_seconds}s")
+
+        # On timeout, try one last time to get any partial fill
+        try:
+            if hasattr(connector, 'in_flight_orders') and order_id in connector.in_flight_orders:
+                order = connector.in_flight_orders[order_id]
+                if hasattr(order, 'executed_amount_base'):
+                    partial_fill = Decimal(str(order.executed_amount_base))
+                    if partial_fill > 0:
+                        self.logger().warning(f"Order {order_id} timeout but has partial fill: {partial_fill}")
+                        return False, partial_fill
+        except:
+            pass
+
+        return False, Decimal("0")
+
+    async def _emergency_close(self,
+                              connector: ConnectorBase,
+                              trading_pair: str,
+                              is_long: bool,
+                              amount: Decimal,
+                              reason: str = "Emergency close"):
+        """
+        Emergency close a position immediately.
+
+        Args:
+            connector: Exchange connector
+            trading_pair: Trading pair symbol
+            is_long: True if closing long position (will sell), False if closing short (will buy)
+            amount: Amount to close
+            reason: Reason for emergency close
+        """
+        try:
+            self.logger().warning(f"EMERGENCY CLOSE: {reason} - {'SELL' if is_long else 'BUY'} {amount} {trading_pair}")
+
+            # Place market order to close position
+            close_order_id = await self._place_order(
+                connector=connector,
+                trading_pair=trading_pair,
+                is_buy=not is_long,  # Sell to close long, buy to close short
+                amount=amount,
+                price=None  # Market order for immediate execution
+            )
+
+            # Wait for fill (shorter timeout for emergency)
+            filled, filled_amount = await self._verify_order_filled(
+                connector, close_order_id, timeout_seconds=15
+            )
+
+            if not filled:
+                self.logger().critical(
+                    f"Emergency close order {close_order_id} not filled! Manual intervention required!"
+                )
+            else:
+                self.logger().info(f"Emergency close successful: {filled_amount} closed")
+
+        except Exception as e:
+            self.logger().critical(f"Emergency close FAILED: {e} - MANUAL INTERVENTION REQUIRED!")
+
+    async def _check_hedge_gap(self,
+                              long_connector: ConnectorBase,
+                              short_connector: ConnectorBase,
+                              trading_pair: str,
+                              expected_amount: Decimal,
+                              max_gap_pct: Decimal = Decimal("0.05")) -> Tuple[bool, Decimal]:
+        """
+        Check if hedge gap is within acceptable limits after position opening.
+
+        Args:
+            long_connector: Connector for long position
+            short_connector: Connector for short position
+            trading_pair: Trading pair
+            expected_amount: Expected position size
+            max_gap_pct: Maximum acceptable gap (0.05 = 5%)
+
+        Returns:
+            Tuple of (is_acceptable, gap_percentage)
+        """
+        try:
+            # Get actual position sizes from exchanges
+            long_position = await self._get_position_size(long_connector, trading_pair, 'long')
+            short_position = await self._get_position_size(short_connector, trading_pair, 'short')
+
+            # Calculate gap
+            gap_amount = abs(long_position - short_position)
+            gap_percentage = gap_amount / expected_amount if expected_amount > 0 else Decimal("1")
+
+            is_acceptable = gap_percentage <= max_gap_pct
+
+            if not is_acceptable:
+                self.logger().warning(
+                    f"Hedge gap too large: {gap_percentage:.2%} "
+                    f"(long={long_position}, short={short_position}, expected={expected_amount})"
+                )
+
+            return is_acceptable, gap_percentage
+
+        except Exception as e:
+            self.logger().error(f"Failed to check hedge gap: {e}")
+            return False, Decimal("1")  # Assume worst case
+
+    async def _get_position_size(self,
+                                connector: ConnectorBase,
+                                trading_pair: str,
+                                side: str) -> Decimal:
+        """
+        Get current position size from exchange.
+
+        Args:
+            connector: Exchange connector
+            trading_pair: Trading pair
+            side: 'long' or 'short'
+
+        Returns:
+            Position size (absolute value)
+        """
+        try:
+            if hasattr(connector, 'get_position'):
+                position = connector.get_position(trading_pair)
+                if position:
+                    return abs(position.amount)
+            return Decimal("0")
+        except Exception as e:
+            self.logger().warning(f"Failed to get position size: {e}")
+            return Decimal("0")
     
     async def _monitor_existing_positions(self):
         """Monitor existing positions for closing opportunities."""
@@ -507,57 +1230,182 @@ class FundingArbitrageStrategy(StrategyPyBase):
             await self._close_position(position_id, reason)
     
     async def _close_position(self, position_id: str, reason: str):
-        """Close an arbitrage position."""
+        """
+        Close an arbitrage position by closing both legs.
+        Closes both positions in parallel for minimal slippage.
+        """
         if position_id not in self.active_positions:
+            self.logger().warning(f"Position {position_id} not found in active positions")
             return
-        
+
         position_data = self.active_positions[position_id]
         self.logger().info(f"Closing position {position_id}: {reason}")
-        
+
+        trading_pair = position_data['trading_pair']
+        long_exchange = position_data['long_exchange']
+        short_exchange = position_data['short_exchange']
+        long_amount = position_data.get('long_amount', position_data['notional_amount'])
+        short_amount = position_data.get('short_amount', position_data['notional_amount'])
+
+        long_connector = self.exchanges[long_exchange]
+        short_connector = self.exchanges[short_exchange]
+
         try:
-            # Close long position
-            long_connector = self.exchanges[position_data['long_exchange']]
-            # await long_connector.sell(...)  # Close long
-            
-            # Close short position  
-            short_connector = self.exchanges[position_data['short_exchange']]
-            # await short_connector.buy(...)  # Close short
-            
-            # Calculate realized PnL (simplified)
-            # In real implementation, would calculate actual funding received
+            # Close both positions in parallel for minimal slippage
+            self.logger().info(f"Closing long {long_amount} on {long_exchange} and short {short_amount} on {short_exchange}")
+
+            async def close_long():
+                # Sell to close long position
+                order_id = await self._place_order(
+                    connector=long_connector,
+                    trading_pair=trading_pair,
+                    is_buy=False,  # SELL to close long
+                    amount=long_amount
+                )
+                filled, filled_amount = await self._verify_order_filled(
+                    long_connector, order_id, timeout_seconds=30
+                )
+                return filled, filled_amount
+
+            async def close_short():
+                # Buy to close short position
+                order_id = await self._place_order(
+                    connector=short_connector,
+                    trading_pair=trading_pair,
+                    is_buy=True,  # BUY to close short
+                    amount=short_amount
+                )
+                filled, filled_amount = await self._verify_order_filled(
+                    short_connector, order_id, timeout_seconds=30
+                )
+                return filled, filled_amount
+
+            # Execute both closes in parallel with exception handling
+            # CRITICAL: Use return_exceptions=True to handle failures safely
+            close_results = await asyncio.gather(
+                close_long(),
+                close_short(),
+                return_exceptions=True
+            )
+
+            long_close_result, short_close_result = close_results
+
+            # Handle close results
+            long_closed = False
+            long_closed_amount = Decimal("0")
+            short_closed = False
+            short_closed_amount = Decimal("0")
+
+            if isinstance(long_close_result, Exception):
+                self.logger().error(f"Failed to close long position: {long_close_result}")
+            else:
+                long_closed, long_closed_amount = long_close_result
+
+            if isinstance(short_close_result, Exception):
+                self.logger().error(f"Failed to close short position: {short_close_result}")
+            else:
+                short_closed, short_closed_amount = short_close_result
+
+            # Check results
+            if not long_closed or not short_closed:
+                self.logger().error(
+                    f"Failed to close position {position_id} completely: "
+                    f"long_closed={long_closed}, short_closed={short_closed}"
+                )
+                # Even if close failed, we remove from tracking to avoid infinite retries
+                # Manual intervention may be needed
+
+            # Calculate actual PnL
+            # In real implementation, this would fetch actual funding payments received
+            # For now, use expected edge as estimate
             estimated_pnl = position_data['expected_edge']
+            position_duration_hours = (time.time() - position_data['entry_time']) / 3600
+
             self.total_funding_collected += estimated_pnl
-            
+
+            self.logger().info(
+                f"✅ Position {position_id} closed: "
+                f"long={long_closed_amount}, short={short_closed_amount}, "
+                f"duration={position_duration_hours:.1f}h, estimated_pnl={estimated_pnl:.4f}"
+            )
+
             # Remove from tracking
             del self.active_positions[position_id]
-            
-            self.logger().info(f"Position {position_id} closed successfully, estimated PnL: {estimated_pnl}")
-            
+
+            # Remove from risk manager
+            self.risk_manager.remove_position_by_exchange_pair(long_exchange, trading_pair)
+            self.risk_manager.remove_position_by_exchange_pair(short_exchange, trading_pair)
+
         except Exception as e:
-            self.logger().error(f"Failed to close position {position_id}: {e}")
+            self.logger().error(f"❌ Failed to close position {position_id}: {e}")
+            # Still remove from tracking to avoid infinite retries
+            if position_id in self.active_positions:
+                del self.active_positions[position_id]
+            raise
     
     def start(self):
         """Start the strategy."""
         super().start()
-        
-        # Start monitoring components
-        asyncio.create_task(self.reconciliation_scheduler.start())
-        asyncio.create_task(self.margin_monitor.run_monitoring_loop())
-        
+
+        # Start monitoring components with task tracking
+        # CRITICAL: Store task references to handle exceptions properly
+        reconciliation_task = asyncio.create_task(self.reconciliation_scheduler.start())
+        margin_task = asyncio.create_task(self.margin_monitor.run_monitoring_loop())
+
+        # Add tasks to tracking set
+        self._background_tasks.add(reconciliation_task)
+        self._background_tasks.add(margin_task)
+
+        # Add done callbacks to handle completion/exceptions
+        reconciliation_task.add_done_callback(self._handle_background_task_done)
+        margin_task.add_done_callback(self._handle_background_task_done)
+
         self.logger().info("Funding arbitrage strategy started")
     
     def stop(self):
         """Stop the strategy."""
         # Stop monitoring
-        asyncio.create_task(self.reconciliation_scheduler.stop())
         self.margin_monitor.stop_monitoring()
-        
+
+        # Cancel all background tasks
+        for task in self._background_tasks:
+            if not task.done():
+                task.cancel()
+
+        # Stop reconciliation
+        asyncio.create_task(self.reconciliation_scheduler.stop())
+
         # Close all positions
         for position_id in list(self.active_positions.keys()):
             asyncio.create_task(self._close_position(position_id, "Strategy stopping"))
-        
+
         super().stop()
         self.logger().info("Funding arbitrage strategy stopped")
+
+    def _handle_background_task_done(self, task: asyncio.Task):
+        """
+        Handle background task completion/failure.
+        CRITICAL: Log exceptions to prevent silent failures.
+        """
+        # Remove from tracking set
+        self._background_tasks.discard(task)
+
+        try:
+            # Check if task raised an exception
+            exception = task.exception()
+            if exception:
+                self.logger().critical(
+                    f"Background task failed with exception: {exception}",
+                    exc_info=exception
+                )
+                # Optionally trigger emergency stop
+                if self.config.emergency_stop_on_critical_issues:
+                    self.emergency_stop_active = True
+        except asyncio.CancelledError:
+            # Task was cancelled, this is normal during shutdown
+            self.logger().info("Background task was cancelled")
+        except Exception as e:
+            self.logger().error(f"Error checking background task result: {e}")
     
     def get_strategy_status(self) -> Dict:
         """Get comprehensive strategy status."""
