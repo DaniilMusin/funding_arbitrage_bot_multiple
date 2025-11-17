@@ -396,7 +396,168 @@ class FundingArbitrageStrategy(StrategyPyBase):
         self.edge_tracker.add_edge_calculation(edge)
 
         return edge
-    
+
+    async def _get_order_book_liquidity(
+        self,
+        connector: ConnectorBase,
+        trading_pair: str
+    ) -> Optional[LiquidityMetrics]:
+        """
+        Get real-time liquidity metrics from connector's order book.
+
+        This checks if there are limit orders in the order book that we can
+        take immediately with market orders.
+
+        Args:
+            connector: Exchange connector
+            trading_pair: Trading pair to check
+
+        Returns:
+            LiquidityMetrics if successful, None otherwise
+        """
+        try:
+            # Get order book from connector
+            order_book = None
+
+            if hasattr(connector, 'get_order_book'):
+                order_book = connector.get_order_book(trading_pair)
+            elif hasattr(connector, 'order_book_tracker') and hasattr(connector.order_book_tracker, 'get_order_book'):
+                order_book = connector.order_book_tracker.get_order_book(trading_pair)
+
+            if not order_book:
+                self.logger().warning(f"No order book available for {connector.name}/{trading_pair}")
+                return None
+
+            # Get best bid and ask
+            try:
+                best_bid = order_book.get_price(False)  # False = bid
+                best_ask = order_book.get_price(True)   # True = ask
+            except:
+                # Alternative method
+                if hasattr(order_book, 'snapshot'):
+                    snapshot = order_book.snapshot
+                    if len(snapshot[0]) > 0 and len(snapshot[1]) > 0:  # bids, asks
+                        best_bid = Decimal(str(snapshot[0][0][0]))  # First bid price
+                        best_ask = Decimal(str(snapshot[1][0][0]))  # First ask price
+                    else:
+                        self.logger().warning(f"Empty order book for {connector.name}/{trading_pair}")
+                        return None
+                else:
+                    self.logger().warning(f"Cannot get prices from order book for {connector.name}/{trading_pair}")
+                    return None
+
+            if best_bid <= 0 or best_ask <= 0:
+                self.logger().warning(f"Invalid prices in order book: bid={best_bid}, ask={best_ask}")
+                return None
+
+            # Calculate mid price
+            mid_price = (best_bid + best_ask) / Decimal("2")
+
+            # Calculate price ranges for depth analysis
+            one_pct_range = mid_price * Decimal("0.01")  # 1% from mid
+            five_pct_range = mid_price * Decimal("0.05")  # 5% from mid
+
+            # Calculate bid depth (liquidity for selling/shorting)
+            bid_price_1pct = mid_price - one_pct_range
+            bid_price_5pct = mid_price - five_pct_range
+
+            # Calculate ask depth (liquidity for buying/longing)
+            ask_price_1pct = mid_price + one_pct_range
+            ask_price_5pct = mid_price + five_pct_range
+
+            # Get volume within ranges
+            # For perpetuals, we use notional value (price * quantity)
+            bid_depth_1pct = Decimal("0")
+            bid_depth_5pct = Decimal("0")
+            ask_depth_1pct = Decimal("0")
+            ask_depth_5pct = Decimal("0")
+
+            try:
+                # Try to get depth from order book methods
+                if hasattr(order_book, 'get_volume_for_price'):
+                    bid_depth_1pct = order_book.get_volume_for_price(False, bid_price_1pct)
+                    bid_depth_5pct = order_book.get_volume_for_price(False, bid_price_5pct)
+                    ask_depth_1pct = order_book.get_volume_for_price(True, ask_price_1pct)
+                    ask_depth_5pct = order_book.get_volume_for_price(True, ask_price_5pct)
+                elif hasattr(order_book, 'snapshot'):
+                    # Manual calculation from snapshot
+                    snapshot = order_book.snapshot
+                    bids = snapshot[0]  # List of [price, quantity]
+                    asks = snapshot[1]
+
+                    # Calculate bid depth
+                    for price, qty in bids:
+                        price_dec = Decimal(str(price))
+                        qty_dec = Decimal(str(qty))
+                        notional = price_dec * qty_dec
+
+                        if price_dec >= bid_price_1pct:
+                            bid_depth_1pct += notional
+                        if price_dec >= bid_price_5pct:
+                            bid_depth_5pct += notional
+
+                    # Calculate ask depth
+                    for price, qty in asks:
+                        price_dec = Decimal(str(price))
+                        qty_dec = Decimal(str(qty))
+                        notional = price_dec * qty_dec
+
+                        if price_dec <= ask_price_1pct:
+                            ask_depth_1pct += notional
+                        if price_dec <= ask_price_5pct:
+                            ask_depth_5pct += notional
+
+            except Exception as e:
+                self.logger().warning(f"Error calculating order book depth: {e}")
+                # Use conservative estimates based on spread
+                spread = best_ask - best_bid
+                avg_price = mid_price
+                # Estimate: assume some minimal liquidity
+                bid_depth_1pct = avg_price * Decimal("10")  # ~10 units
+                bid_depth_5pct = avg_price * Decimal("50")  # ~50 units
+                ask_depth_1pct = avg_price * Decimal("10")
+                ask_depth_5pct = avg_price * Decimal("50")
+
+            # Calculate spread in basis points
+            spread = best_ask - best_bid
+            spread_bps = (spread / mid_price) * Decimal("10000")
+
+            # Calculate impact score (simplified)
+            # This estimates the price impact of a $1000 order
+            reference_size = Decimal("1000")
+            available_liquidity = min(bid_depth_1pct, ask_depth_1pct)
+
+            if available_liquidity > 0:
+                impact_score = min((reference_size / available_liquidity) * Decimal("2"), Decimal("1.0"))
+            else:
+                impact_score = Decimal("1.0")  # Maximum impact if no liquidity
+
+            liquidity_metrics = LiquidityMetrics(
+                exchange=connector.name,
+                trading_pair=trading_pair,
+                bid_depth_1pct=bid_depth_1pct,
+                ask_depth_1pct=ask_depth_1pct,
+                bid_depth_5pct=bid_depth_5pct,
+                ask_depth_5pct=ask_depth_5pct,
+                avg_spread_bps=spread_bps,
+                impact_score=impact_score,
+                timestamp=time.time()
+            )
+
+            self.logger().debug(
+                f"Order book liquidity for {connector.name}/{trading_pair}: "
+                f"bid_1%={bid_depth_1pct:.2f}, ask_1%={ask_depth_1pct:.2f}, "
+                f"spread={spread_bps:.2f}bps"
+            )
+
+            return liquidity_metrics
+
+        except Exception as e:
+            self.logger().error(f"Failed to get order book liquidity for {connector.name}/{trading_pair}: {e}")
+            import traceback
+            self.logger().debug(traceback.format_exc())
+            return None
+
     async def _calculate_position_size(self, 
                                      trading_pair: str,
                                      long_exchange: str,
@@ -446,35 +607,74 @@ class FundingArbitrageStrategy(StrategyPyBase):
         long_exchange = opportunity['long_exchange']
         short_exchange = opportunity['short_exchange']
         edge = opportunity['edge_decomposition']
-        
+
+        self.logger().info(f"Evaluating opportunity: {trading_pair} on {long_exchange}/{short_exchange}, edge={edge.total_edge:.6f}")
+
         # Check funding settlement timing
         settlement_status, minutes_to_settlement = self.funding_scheduler.get_settlement_status(
             [long_exchange, short_exchange]
         )
-        
+
         should_open, timing_reason = self.funding_scheduler.should_open_position(
             [long_exchange, short_exchange],
             minimum_time_horizon_minutes=self.config.min_position_hold_time_minutes
         )
-        
+
         if not should_open:
             self.opportunities_skipped_by_reason[f"timing_{timing_reason}"] = \
                 self.opportunities_skipped_by_reason.get(f"timing_{timing_reason}", 0) + 1
             return
-        
-        # Check liquidity
-        liquidity_ok_long, liquidity_reason_long, _ = self.risk_manager.check_liquidity_risk(
+
+        # CRITICAL FIX: Get real-time liquidity from order book BEFORE checking
+        self.logger().info("Fetching order book liquidity data...")
+
+        long_liquidity = await self._get_order_book_liquidity(
+            self.exchanges[long_exchange], trading_pair
+        )
+        short_liquidity = await self._get_order_book_liquidity(
+            self.exchanges[short_exchange], trading_pair
+        )
+
+        # Update risk manager cache with fresh data
+        if long_liquidity:
+            self.risk_manager.update_liquidity_metrics(long_liquidity)
+            self.logger().debug(
+                f"Long liquidity ({long_exchange}): "
+                f"bid_1%={long_liquidity.bid_depth_1pct:.2f}, "
+                f"ask_1%={long_liquidity.ask_depth_1pct:.2f}"
+            )
+        else:
+            self.logger().warning(f"Failed to get order book liquidity for {long_exchange}/{trading_pair}")
+
+        if short_liquidity:
+            self.risk_manager.update_liquidity_metrics(short_liquidity)
+            self.logger().debug(
+                f"Short liquidity ({short_exchange}): "
+                f"bid_1%={short_liquidity.bid_depth_1pct:.2f}, "
+                f"ask_1%={short_liquidity.ask_depth_1pct:.2f}"
+            )
+        else:
+            self.logger().warning(f"Failed to get order book liquidity for {short_exchange}/{trading_pair}")
+
+        # Check liquidity (now with real data from order book!)
+        liquidity_ok_long, liquidity_reason_long, impact_long = self.risk_manager.check_liquidity_risk(
             long_exchange, trading_pair, edge.notional_amount
         )
-        liquidity_ok_short, liquidity_reason_short, _ = self.risk_manager.check_liquidity_risk(
+        liquidity_ok_short, liquidity_reason_short, impact_short = self.risk_manager.check_liquidity_risk(
             short_exchange, trading_pair, edge.notional_amount
         )
-        
+
+        self.logger().info(
+            f"Liquidity check: long={liquidity_ok_long} ({liquidity_reason_long}), "
+            f"short={liquidity_ok_short} ({liquidity_reason_short})"
+        )
+
         if not liquidity_ok_long or not liquidity_ok_short:
             self.opportunities_skipped_by_reason["liquidity"] = \
                 self.opportunities_skipped_by_reason.get("liquidity", 0) + 1
+            self.logger().info(f"Skipping due to insufficient liquidity")
             return
-        
+
         # Execute the arbitrage
         await self._execute_arbitrage(opportunity)
     
