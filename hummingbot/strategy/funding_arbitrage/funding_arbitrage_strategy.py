@@ -33,18 +33,21 @@ class FundingArbitrageConfig:
     min_edge_required: Decimal = Decimal("0.0005")  # 0.05%
     min_funding_rate_diff: Decimal = Decimal("0.0003")  # 0.03%
     min_position_hold_time_minutes: int = 10
-    
+
+    # Position sizing
+    order_amount: Decimal = Decimal("1.0")  # Order amount per position
+
     # Risk management
     max_notional_per_exchange: Decimal = Decimal("50000")
     max_total_notional: Decimal = Decimal("200000")
     max_leverage: Decimal = Decimal("5")
     max_hedge_gap_percentage: Decimal = Decimal("0.05")  # 5%
-    
+
     # Timing
     funding_check_interval_seconds: int = 60
     reconciliation_interval_seconds: int = 300  # 5 minutes
     margin_check_interval_seconds: int = 30
-    
+
     # Safety
     emergency_stop_on_critical_issues: bool = True
     auto_leverage_reduction: bool = True
@@ -209,7 +212,18 @@ class FundingArbitrageStrategy(StrategyPyBase):
         
         for position_id in positions_to_close:
             await self._close_position(position_id, "Emergency exit")
-    
+
+    def tick(self, timestamp: float):
+        """
+        Main strategy tick - called every second by hummingbot.
+
+        Args:
+            timestamp: Current timestamp from hummingbot clock
+        """
+        # Create task for async on_tick
+        # This is the standard pattern for async strategies in hummingbot
+        asyncio.create_task(self.on_tick())
+
     async def on_tick(self):
         """Main strategy tick - called periodically."""
         try:
