@@ -98,13 +98,40 @@ funding_arbitrage_config_map = {
         is_connect_key=True
     ),
 
-    # Trading pair
+    # Auto pair selection mode
+    "auto_select_pairs": ConfigVar(
+        key="auto_select_pairs",
+        prompt="Enable automatic trading pair selection? (Yes/No) >>> ",
+        default=True,
+        type_str="bool",
+        prompt_on_new=True
+    ),
+
+    # Trading pair (only if not auto-selecting)
     "trading_pair": ConfigVar(
         key="trading_pair",
         prompt=trading_pair_prompt,
-        prompt_on_new=True,
+        required_if=lambda: not funding_arbitrage_config_map.get("auto_select_pairs").value,
         validator=trading_pair_validator,
         on_validated=trading_pair_on_validated
+    ),
+
+    # Auto selection parameters
+    "max_trading_pairs": ConfigVar(
+        key="max_trading_pairs",
+        prompt="How many trading pairs to trade simultaneously (if auto-selecting)? >>> ",
+        default=3,
+        required_if=lambda: funding_arbitrage_config_map.get("auto_select_pairs").value,
+        type_str="int",
+        validator=lambda v: validate_int(v, min_value=1, max_value=10, inclusive=True)
+    ),
+    "pair_scan_interval": ConfigVar(
+        key="pair_scan_interval",
+        prompt="How often to rescan pairs for profitability (in seconds, if auto-selecting)? >>> ",
+        default=300,
+        required_if=lambda: funding_arbitrage_config_map.get("auto_select_pairs").value,
+        type_str="int",
+        validator=lambda v: validate_int(v, min_value=60, inclusive=True)
     ),
 
     # Position sizing

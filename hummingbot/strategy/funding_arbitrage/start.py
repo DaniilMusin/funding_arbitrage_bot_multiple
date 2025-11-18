@@ -24,8 +24,18 @@ def start(self):
     exchanges: Dict[str, ConnectorBase] = {}
     trading_pairs: List[str] = []
 
-    # Get trading pair
-    trading_pair = funding_arbitrage_config_map.get("trading_pair").value
+    # Get configuration mode
+    auto_select_pairs = funding_arbitrage_config_map.get("auto_select_pairs").value
+
+    # Get trading pair(s)
+    if auto_select_pairs:
+        # Auto mode: will scan all pairs, initialize with empty list
+        trading_pair = None
+        self.logger().info("Auto pair selection enabled - will scan all available pairs")
+    else:
+        # Manual mode: use specified pair
+        trading_pair = funding_arbitrage_config_map.get("trading_pair").value
+        trading_pairs = [trading_pair]
 
     # Collect all configured exchanges
     exchange_connectors = []
@@ -34,7 +44,9 @@ def start(self):
         if key in funding_arbitrage_config_map:
             exchange_name = funding_arbitrage_config_map.get(key).value
             if exchange_name:
-                exchange_connectors.append((exchange_name.lower(), [trading_pair]))
+                # In auto mode, don't specify pairs - will be discovered
+                pairs_to_init = [trading_pair] if trading_pair else []
+                exchange_connectors.append((exchange_name.lower(), pairs_to_init))
 
     if not exchange_connectors:
         self.logger().error("No exchanges configured for funding arbitrage")
@@ -59,6 +71,10 @@ def start(self):
     min_position_hold_time = funding_arbitrage_config_map.get("min_position_hold_time").value
     emergency_stop = funding_arbitrage_config_map.get("emergency_stop_on_critical").value
 
+    # Auto selection parameters
+    max_trading_pairs = funding_arbitrage_config_map.get("max_trading_pairs").value if auto_select_pairs else 1
+    pair_scan_interval = funding_arbitrage_config_map.get("pair_scan_interval").value if auto_select_pairs else 300
+
     # Create strategy configuration
     config = FundingArbitrageConfig(
         min_edge_required=min_edge_required,
@@ -70,21 +86,37 @@ def start(self):
         funding_check_interval_seconds=funding_check_interval,
         emergency_stop_on_critical_issues=emergency_stop,
         order_amount=order_amount,
+        auto_select_pairs=auto_select_pairs,
+        max_trading_pairs=max_trading_pairs,
+        pair_scan_interval_seconds=pair_scan_interval,
     )
 
     # Create and initialize strategy
     self.strategy = FundingArbitrageStrategy(
         exchanges=exchanges,
         config=config,
-        trading_pairs=[trading_pair],
+        trading_pairs=trading_pairs,  # Empty if auto mode
     )
 
-    self.logger().info(
-        f"Funding arbitrage strategy initialized:\n"
-        f"  Exchanges: {', '.join(exchanges.keys())}\n"
-        f"  Trading pair: {trading_pair}\n"
-        f"  Order amount: {order_amount}\n"
-        f"  Min funding rate diff: {min_funding_rate_diff:.2%}\n"
-        f"  Min edge required: {min_edge_required:.2%}\n"
-        f"  Max leverage: {max_leverage}x"
-    )
+    # Log initialization
+    if auto_select_pairs:
+        self.logger().info(
+            f"Funding arbitrage strategy initialized (AUTO MODE):\n"
+            f"  Exchanges: {', '.join(exchanges.keys())}\n"
+            f"  Max trading pairs: {max_trading_pairs}\n"
+            f"  Pair scan interval: {pair_scan_interval}s\n"
+            f"  Order amount: {order_amount}\n"
+            f"  Min funding rate diff: {min_funding_rate_diff:.2%}\n"
+            f"  Min edge required: {min_edge_required:.2%}\n"
+            f"  Max leverage: {max_leverage}x"
+        )
+    else:
+        self.logger().info(
+            f"Funding arbitrage strategy initialized (MANUAL MODE):\n"
+            f"  Exchanges: {', '.join(exchanges.keys())}\n"
+            f"  Trading pair: {trading_pair}\n"
+            f"  Order amount: {order_amount}\n"
+            f"  Min funding rate diff: {min_funding_rate_diff:.2%}\n"
+            f"  Min edge required: {min_edge_required:.2%}\n"
+            f"  Max leverage: {max_leverage}x"
+        )
