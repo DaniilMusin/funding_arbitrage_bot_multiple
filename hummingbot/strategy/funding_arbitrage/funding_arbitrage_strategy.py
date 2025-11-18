@@ -33,18 +33,27 @@ class FundingArbitrageConfig:
     min_edge_required: Decimal = Decimal("0.0005")  # 0.05%
     min_funding_rate_diff: Decimal = Decimal("0.0003")  # 0.03%
     min_position_hold_time_minutes: int = 10
-    
+
+    # Position sizing
+    order_amount: Decimal = Decimal("1.0")  # Order amount per position
+
+    # Auto trading pair selection
+    auto_select_pairs: bool = True  # Automatically select most profitable pairs
+    max_trading_pairs: int = 3  # Maximum number of pairs to trade simultaneously
+    pair_scan_interval_seconds: int = 300  # How often to rescan pairs (5 min)
+    min_pair_volume_24h: Decimal = Decimal("1000000")  # Minimum 24h volume in USD
+
     # Risk management
     max_notional_per_exchange: Decimal = Decimal("50000")
     max_total_notional: Decimal = Decimal("200000")
     max_leverage: Decimal = Decimal("5")
     max_hedge_gap_percentage: Decimal = Decimal("0.05")  # 5%
-    
+
     # Timing
     funding_check_interval_seconds: int = 60
     reconciliation_interval_seconds: int = 300  # 5 minutes
     margin_check_interval_seconds: int = 30
-    
+
     # Safety
     emergency_stop_on_critical_issues: bool = True
     auto_leverage_reduction: bool = True
@@ -121,6 +130,12 @@ class FundingArbitrageStrategy(StrategyPyBase):
         self.funding_rates: Dict[str, Dict[str, FundingInfo]] = {}  # exchange -> pair -> FundingInfo
         self.last_funding_check = 0
         self.emergency_stop_active = False
+
+        # Auto pair selection
+        self.available_pairs: Set[str] = set()  # All available pairs across exchanges
+        self.selected_pairs: List[str] = []  # Currently selected pairs for trading
+        self.last_pair_scan = 0
+        self.pair_profitability: Dict[str, Decimal] = {}  # pair -> estimated profit rate
 
         # Background tasks tracking (CRITICAL: prevent silent failures)
         self._background_tasks: Set[asyncio.Task] = set()
@@ -209,27 +224,140 @@ class FundingArbitrageStrategy(StrategyPyBase):
         
         for position_id in positions_to_close:
             await self._close_position(position_id, "Emergency exit")
-    
+
+    def tick(self, timestamp: float):
+        """
+        Main strategy tick - called every second by hummingbot.
+
+        Args:
+            timestamp: Current timestamp from hummingbot clock
+        """
+        # Create task for async on_tick
+        # This is the standard pattern for async strategies in hummingbot
+        asyncio.create_task(self.on_tick())
+
     async def on_tick(self):
         """Main strategy tick - called periodically."""
         try:
             current_time = time.time()
-            
-            # Update funding rates
+
+            # Auto pair selection - scan for profitable pairs
+            if self.config.auto_select_pairs:
+                if current_time - self.last_pair_scan >= self.config.pair_scan_interval_seconds:
+                    await self._scan_and_select_pairs()
+                    self.last_pair_scan = current_time
+
+            # Update funding rates for active/selected pairs
             if current_time - self.last_funding_check >= self.config.funding_check_interval_seconds:
                 await self._update_funding_rates()
                 self.last_funding_check = current_time
-            
+
             # Check for arbitrage opportunities
             if not self.emergency_stop_active:
                 await self._check_arbitrage_opportunities()
-            
+
             # Monitor existing positions
             await self._monitor_existing_positions()
-            
+
         except Exception as e:
             self.logger().error(f"Error in strategy tick: {e}")
-    
+
+    async def _scan_and_select_pairs(self):
+        """
+        Scan all available pairs across exchanges and select the most profitable ones.
+        Updates self.selected_pairs with top pairs by funding rate differential.
+        """
+        self.logger().info("🔍 Scanning trading pairs for best funding rate opportunities...")
+
+        try:
+            # Collect all available pairs from all exchanges
+            all_pairs: Set[str] = set()
+            pair_data: Dict[str, Dict] = {}  # pair -> {exchange -> funding_info, volume}
+
+            for exchange_name, connector in self.exchanges.items():
+                try:
+                    # Get all trading pairs for this exchange
+                    if hasattr(connector, 'trading_pairs'):
+                        exchange_pairs = connector.trading_pairs
+                    elif hasattr(connector, 'get_trading_pairs'):
+                        exchange_pairs = await connector.get_trading_pairs()
+                    else:
+                        # Fallback: use predefined list or skip
+                        continue
+
+                    for pair in exchange_pairs:
+                        all_pairs.add(pair)
+
+                        # Get funding info
+                        if hasattr(connector, 'get_funding_info'):
+                            try:
+                                funding_info = await connector.get_funding_info(pair)
+                                if funding_info:
+                                    if pair not in pair_data:
+                                        pair_data[pair] = {}
+                                    pair_data[pair][exchange_name] = {
+                                        'funding_info': funding_info,
+                                        'rate': Decimal(str(funding_info.rate)) if hasattr(funding_info, 'rate') else Decimal('0')
+                                    }
+                            except Exception as e:
+                                # Skip pairs that fail to fetch
+                                pass
+
+                except Exception as e:
+                    self.logger().warning(f"Failed to scan pairs on {exchange_name}: {e}")
+
+            # Calculate profitability for each pair
+            profitability_scores: Dict[str, Decimal] = {}
+
+            for pair, exchanges_data in pair_data.items():
+                if len(exchanges_data) < 2:
+                    continue  # Need at least 2 exchanges for arbitrage
+
+                # Find max and min funding rates
+                rates = [data['rate'] for data in exchanges_data.values()]
+                if not rates:
+                    continue
+
+                max_rate = max(rates)
+                min_rate = min(rates)
+                rate_diff = abs(max_rate - min_rate)
+
+                # Check if meets minimum criteria
+                if rate_diff >= self.config.min_funding_rate_diff:
+                    # Profitability score = rate difference (simple for now)
+                    profitability_scores[pair] = rate_diff
+
+            # Select top N pairs
+            if profitability_scores:
+                sorted_pairs = sorted(
+                    profitability_scores.items(),
+                    key=lambda x: x[1],
+                    reverse=True
+                )
+
+                # Update selected pairs
+                new_selected = [pair for pair, score in sorted_pairs[:self.config.max_trading_pairs]]
+
+                if new_selected != self.selected_pairs:
+                    self.logger().info(
+                        f"📊 Updated selected pairs:\n" +
+                        "\n".join([
+                            f"  {i+1}. {pair}: {profitability_scores[pair]:.4%} rate differential"
+                            for i, pair in enumerate(new_selected)
+                        ])
+                    )
+                    self.selected_pairs = new_selected
+                    self.pair_profitability = profitability_scores
+
+                    # Update trading_pairs to use selected pairs
+                    if self.config.auto_select_pairs:
+                        self.trading_pairs = self.selected_pairs
+            else:
+                self.logger().warning("No profitable pairs found meeting minimum criteria")
+
+        except Exception as e:
+            self.logger().error(f"Error scanning pairs: {e}")
+
     async def _update_funding_rates(self):
         """Update funding rates from all exchanges."""
         for exchange_name, connector in self.exchanges.items():
@@ -351,7 +479,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                         if fee_info:
                             maker_fee = Decimal(str(fee_info.maker_percent_fee_decimal)) if hasattr(fee_info, 'maker_percent_fee_decimal') else maker_fee
                             taker_fee = Decimal(str(fee_info.taker_percent_fee_decimal)) if hasattr(fee_info, 'taker_percent_fee_decimal') else taker_fee
-                    except:
+                    except Exception:
                         pass
 
                 # Alternative: Check for trading_fees attribute
@@ -362,7 +490,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                             fee_tier = trading_fees[trading_pair]
                             maker_fee = Decimal(str(fee_tier.get('maker', maker_fee)))
                             taker_fee = Decimal(str(fee_tier.get('taker', taker_fee)))
-                    except:
+                    except Exception:
                         pass
 
                 fees_config[exchange_name] = {'maker': maker_fee, 'taker': taker_fee}
@@ -432,7 +560,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             try:
                 best_bid = order_book.get_price(False)  # False = bid
                 best_ask = order_book.get_price(True)   # True = ask
-            except:
+            except Exception:
                 # Alternative method
                 if hasattr(order_book, 'snapshot'):
                     snapshot = order_book.snapshot
@@ -672,7 +800,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
         if not liquidity_ok_long or not liquidity_ok_short:
             self.opportunities_skipped_by_reason["liquidity"] = \
                 self.opportunities_skipped_by_reason.get("liquidity", 0) + 1
-            self.logger().info(f"Skipping due to insufficient liquidity")
+            self.logger().info("Skipping due to insufficient liquidity")
             return
 
         # Execute the arbitrage
@@ -1092,7 +1220,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     if partial_fill > 0:
                         self.logger().warning(f"Order {order_id} timeout but has partial fill: {partial_fill}")
                         return False, partial_fill
-        except:
+        except Exception:
             pass
 
         return False, Decimal("0")

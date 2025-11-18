@@ -27,23 +27,23 @@ class SettlementTime:
     """Represents a funding settlement time."""
     hour: int
     minute: int = 0
-    timezone: str = 'UTC'
+    tz: str = 'UTC'
     
     def to_utc_time(self, date: datetime) -> datetime:
         """Convert to UTC datetime for given date."""
-        tz = pytz.timezone(self.timezone)
+        tz = pytz.timezone(self.tz)
         local_time = tz.localize(datetime.combine(date, datetime.min.time().replace(
             hour=self.hour, minute=self.minute
         )))
         return local_time.astimezone(pytz.UTC)
 
 
-@dataclass 
+@dataclass
 class ExchangeSchedule:
     """Funding schedule configuration for an exchange."""
     exchange_name: str
     settlement_times: List[SettlementTime]  # Times when funding settles
-    timezone: str = 'UTC'
+    tz: str = 'UTC'
     pre_settlement_buffer_minutes: int = 5  # Close positions this many minutes before
     post_settlement_delay_minutes: int = 2  # Wait this long after settlement for data
     funding_rate_update_delay_minutes: int = 1  # How long after settlement rates update
