@@ -95,14 +95,25 @@ async def quick_start(args: argparse.Namespace, secrets_manager: BaseSecretsMana
     AllConnectorSettings.initialize_paper_trade_settings(client_config_map.paper_trade.paper_trade_exchanges)
 
     hb = HummingbotApplication.main_application(client_config_map=client_config_map)
-    # Todo: validate strategy and config_file_name before assinging
 
+    # Validate strategy and config_file_name before assigning
     strategy_config = None
     is_script = False
     script_config = None
     if config_file_name is not None:
+        # Validate config file name format
+        if not isinstance(config_file_name, str) or not config_file_name.strip():
+            logging.getLogger().error(f"Invalid config file name: {config_file_name}")
+            return
+
+        # Check file extension is valid (either .yml or .py)
+        file_extension = config_file_name.split(".")[-1] if "." in config_file_name else ""
+        if file_extension not in ["yml", "yaml", "py"]:
+            logging.getLogger().error(f"Invalid config file extension: {file_extension}. Expected .yml, .yaml, or .py")
+            return
+
         hb.strategy_file_name = config_file_name
-        if config_file_name.split(".")[-1] == "py":
+        if file_extension == "py":
             hb.strategy_name = hb.strategy_file_name
             is_script = True
             script_config = args.script_conf if args.script_conf else None

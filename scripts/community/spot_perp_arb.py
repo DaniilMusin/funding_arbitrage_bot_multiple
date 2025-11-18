@@ -24,7 +24,8 @@ class StrategyAction(Enum):
     SELL_SPOT_LONG_PERP = 2
 
 
-# TODO: handle corner cases -- spot price and perp price never cross again after position is opened
+# Corner case handling: Force close positions if they remain open too long
+# Added timeout-based forced close mechanism with configurable max loss threshold
 class SpotPerpArb(ScriptStrategyBase):
     """
     PRECHECK:
@@ -57,7 +58,12 @@ class SpotPerpArb(ScriptStrategyBase):
     in_flight_state_start_ts = 0
     in_flight_state_tolerance = 60
     opened_state_start_ts = 0
-    opened_state_tolerance = 60 * 60 * 2
+    opened_state_tolerance = 60 * 60 * 2  # 2 hours before warning
+
+    # Force close position after this timeout even with loss
+    force_close_timeout = 60 * 60 * 4  # 4 hours
+    # Maximum acceptable loss in bps when force closing (e.g., 50 bps = 0.5%)
+    max_force_close_loss_bps = 50
 
     # write order book csv
     order_book_csv = f"./data/spot_perp_arb_order_book_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}.csv"
@@ -149,7 +155,20 @@ class SpotPerpArb(ScriptStrategyBase):
         ):
             return
 
-        # flag out if position waits too long without any sign of closing
+        # Handle corner case: force close position if open too long
+        if (
+            self.strategy_state == StrategyState.Opened
+            and self.current_timestamp
+            > self.opened_state_start_ts + self.force_close_timeout
+        ):
+            self.logger().error(
+                f"Position has been opened for more than {self.force_close_timeout} seconds. "
+                f"Force closing position to prevent unlimited exposure."
+            )
+            self._force_close_position()
+            return
+
+        # Warn if position waits too long without any sign of closing
         if (
             self.strategy_state == StrategyState.Opened
             and self.current_timestamp
@@ -157,7 +176,8 @@ class SpotPerpArb(ScriptStrategyBase):
         ):
             self.logger().warning(
                 f"Position has been opened for more than {self.opened_state_tolerance} seconds without any sign of closing. "
-                "Consider undoing the position manually or lower the profitability margin."
+                "Consider undoing the position manually or lower the profitability margin. "
+                f"Position will be force closed after {self.force_close_timeout} seconds."
             )
 
         # TODO: change to async on order execution
@@ -407,6 +427,58 @@ class SpotPerpArb(ScriptStrategyBase):
             raise ValueError(
                 f"Strategy state: {self.strategy_state} shouldn't happen during trade."
             )
+
+    def _force_close_position(self) -> None:
+        """Force close position when it has been open too long without crossing.
+
+        This handles the corner case where spot and perp prices never cross again
+        after position is opened. Rather than holding the position indefinitely,
+        we force close it accepting a small loss up to max_force_close_loss_bps.
+        """
+        self.logger().info("Evaluating force close of stuck position...")
+
+        # Calculate current loss if we close now
+        if self.last_strategy_action == StrategyAction.BUY_SPOT_SHORT_PERP:
+            # We bought spot and shorted perp, to close we sell spot and long perp
+            spot_sell_price = self.limit_taker_price(self.spot_connector, is_buy=False)
+            perp_buy_price = self.limit_taker_price(self.perp_connector, is_buy=True)
+            current_ret_bps = float((spot_sell_price - perp_buy_price) / perp_buy_price) * 10000
+
+            # Close even with loss if under threshold
+            if current_ret_bps >= -self.max_force_close_loss_bps:
+                self.logger().info(
+                    f"Force closing BUY_SPOT_SHORT_PERP position. "
+                    f"Current return: {current_ret_bps:.2f} bps (threshold: -{self.max_force_close_loss_bps} bps)"
+                )
+                self.update_static_state()
+                self.last_strategy_action = StrategyAction.SELL_SPOT_LONG_PERP
+                self.sell_spot_long_perp()
+            else:
+                self.logger().error(
+                    f"Cannot force close: loss {current_ret_bps:.2f} bps exceeds threshold -{self.max_force_close_loss_bps} bps. "
+                    "Manual intervention required!"
+                )
+
+        elif self.last_strategy_action == StrategyAction.SELL_SPOT_LONG_PERP:
+            # We sold spot and longed perp, to close we buy spot and short perp
+            spot_buy_price = self.limit_taker_price(self.spot_connector, is_buy=True)
+            perp_sell_price = self.limit_taker_price(self.perp_connector, is_buy=False)
+            current_ret_bps = float((perp_sell_price - spot_buy_price) / spot_buy_price) * 10000
+
+            # Close even with loss if under threshold
+            if current_ret_bps >= -self.max_force_close_loss_bps:
+                self.logger().info(
+                    f"Force closing SELL_SPOT_LONG_PERP position. "
+                    f"Current return: {current_ret_bps:.2f} bps (threshold: -{self.max_force_close_loss_bps} bps)"
+                )
+                self.update_static_state()
+                self.last_strategy_action = StrategyAction.BUY_SPOT_SHORT_PERP
+                self.buy_spot_short_perp()
+            else:
+                self.logger().error(
+                    f"Cannot force close: loss {current_ret_bps:.2f} bps exceeds threshold -{self.max_force_close_loss_bps} bps. "
+                    "Manual intervention required!"
+                )
 
     def format_status(self) -> str:
         if not self.ready_to_trade:

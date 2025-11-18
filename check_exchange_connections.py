@@ -6,7 +6,7 @@
 import asyncio
 import os
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 # Добавляем путь к hummingbot
 sys.path.append(os.path.join(os.path.dirname(__file__), 'hummingbot'))
@@ -21,7 +21,7 @@ class ExchangeConnectionChecker:
         self.client_config_map = ClientConfigAdapter()
         self.connections_status = {}
         
-    async def check_bybit_perpetual(self) -> Dict[str, any]:
+    async def check_bybit_perpetual(self) -> Dict[str, Any]:
         """Проверка подключения к Bybit Perpetual"""
         try:
             from hummingbot.connector.derivative.bybit_perpetual.bybit_perpetual_derivative import BybitPerpetualDerivative
@@ -67,7 +67,7 @@ class ExchangeConnectionChecker:
                 "message": f"Ошибка подключения к Bybit Perpetual: {str(e)}"
             }
     
-    async def check_kucoin_perpetual(self) -> Dict[str, any]:
+    async def check_kucoin_perpetual(self) -> Dict[str, Any]:
         """Проверка подключения к KuCoin Perpetual"""
         try:
             from hummingbot.connector.derivative.kucoin_perpetual.kucoin_perpetual_derivative import KucoinPerpetualDerivative
@@ -115,7 +115,7 @@ class ExchangeConnectionChecker:
                 "message": f"Ошибка подключения к KuCoin Perpetual: {str(e)}"
             }
     
-    async def check_binance_spot(self) -> Dict[str, any]:
+    async def check_binance_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Binance Spot"""
         try:
             from hummingbot.connector.exchange.binance.binance_exchange import BinanceExchange
@@ -161,7 +161,7 @@ class ExchangeConnectionChecker:
                 "message": f"Ошибка подключения к Binance Spot: {str(e)}"
             }
     
-    async def check_okx_spot(self) -> Dict[str, any]:
+    async def check_okx_spot(self) -> Dict[str, Any]:
         """Проверка подключения к OKX Spot"""
         try:
             from hummingbot.connector.exchange.okx.okx_exchange import OkxExchange

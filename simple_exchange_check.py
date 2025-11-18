@@ -10,7 +10,7 @@ import hmac
 import hashlib
 import base64
 import json
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 
 class SimpleExchangeChecker:
@@ -25,7 +25,7 @@ class SimpleExchangeChecker:
         if self.session:
             await self.session.close()
     
-    async def check_bybit_perpetual(self) -> Dict[str, any]:
+    async def check_bybit_perpetual(self) -> Dict[str, Any]:
         """Проверка подключения к Bybit Perpetual"""
         try:
             # Проверяем публичный API
@@ -57,7 +57,7 @@ class SimpleExchangeChecker:
                 "message": f"Ошибка подключения к Bybit Perpetual: {str(e)}"
             }
     
-    async def check_kucoin_perpetual(self) -> Dict[str, any]:
+    async def check_kucoin_perpetual(self) -> Dict[str, Any]:
         """Проверка подключения к KuCoin Perpetual"""
         try:
             # Проверяем публичный API
@@ -89,7 +89,7 @@ class SimpleExchangeChecker:
                 "message": f"Ошибка подключения к KuCoin Perpetual: {str(e)}"
             }
     
-    async def check_binance_spot(self) -> Dict[str, any]:
+    async def check_binance_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Binance Spot"""
         try:
             # Проверяем публичный API
@@ -121,7 +121,7 @@ class SimpleExchangeChecker:
                 "message": f"Ошибка подключения к Binance Spot: {str(e)}"
             }
     
-    async def check_okx_spot(self) -> Dict[str, any]:
+    async def check_okx_spot(self) -> Dict[str, Any]:
         """Проверка подключения к OKX Spot"""
         try:
             # Проверяем публичный API
@@ -154,7 +154,7 @@ class SimpleExchangeChecker:
                 "message": f"Ошибка подключения к OKX Spot: {str(e)}"
             }
     
-    async def check_kraken_spot(self) -> Dict[str, any]:
+    async def check_kraken_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Kraken Spot"""
         try:
             # Проверяем публичный API
@@ -187,7 +187,7 @@ class SimpleExchangeChecker:
                 "message": f"Ошибка подключения к Kraken Spot: {str(e)}"
             }
     
-    async def check_gate_io_spot(self) -> Dict[str, any]:
+    async def check_gate_io_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Gate.io Spot"""
         try:
             # Проверяем публичный API
