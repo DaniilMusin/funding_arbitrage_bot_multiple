@@ -206,7 +206,7 @@ class RiskManager:
                 f"Total notional {total_notional} exceeds limit {total_limit.max_value}"
             )
         elif total_notional > total_limit.get_warning_level():
-            warnings.append(f"Total notional approaching limit")
+            warnings.append("Total notional approaching limit")
         
         # Check concentration
         pair_notional = self._get_pair_notional(trading_pair) + proposed_notional

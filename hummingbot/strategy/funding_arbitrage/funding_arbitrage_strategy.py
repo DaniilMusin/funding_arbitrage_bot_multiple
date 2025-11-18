@@ -351,7 +351,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                         if fee_info:
                             maker_fee = Decimal(str(fee_info.maker_percent_fee_decimal)) if hasattr(fee_info, 'maker_percent_fee_decimal') else maker_fee
                             taker_fee = Decimal(str(fee_info.taker_percent_fee_decimal)) if hasattr(fee_info, 'taker_percent_fee_decimal') else taker_fee
-                    except:
+                    except Exception:
                         pass
 
                 # Alternative: Check for trading_fees attribute
@@ -362,7 +362,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                             fee_tier = trading_fees[trading_pair]
                             maker_fee = Decimal(str(fee_tier.get('maker', maker_fee)))
                             taker_fee = Decimal(str(fee_tier.get('taker', taker_fee)))
-                    except:
+                    except Exception:
                         pass
 
                 fees_config[exchange_name] = {'maker': maker_fee, 'taker': taker_fee}
@@ -432,7 +432,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             try:
                 best_bid = order_book.get_price(False)  # False = bid
                 best_ask = order_book.get_price(True)   # True = ask
-            except:
+            except Exception:
                 # Alternative method
                 if hasattr(order_book, 'snapshot'):
                     snapshot = order_book.snapshot
@@ -672,7 +672,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
         if not liquidity_ok_long or not liquidity_ok_short:
             self.opportunities_skipped_by_reason["liquidity"] = \
                 self.opportunities_skipped_by_reason.get("liquidity", 0) + 1
-            self.logger().info(f"Skipping due to insufficient liquidity")
+            self.logger().info("Skipping due to insufficient liquidity")
             return
 
         # Execute the arbitrage
@@ -1092,7 +1092,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     if partial_fill > 0:
                         self.logger().warning(f"Order {order_id} timeout but has partial fill: {partial_fill}")
                         return False, partial_fill
-        except:
+        except Exception:
             pass
 
         return False, Decimal("0")

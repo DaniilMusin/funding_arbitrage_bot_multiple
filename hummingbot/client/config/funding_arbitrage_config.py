@@ -331,7 +331,7 @@ class FundingArbitrageConfig(BaseSettings):
             )
         
         # Check that we have both spot and perpetual exchanges if possible
-        spot_exchanges = [ex for ex in configured_exchanges if not 'perpetual' in ex]
+        spot_exchanges = [ex for ex in configured_exchanges if 'perpetual' not in ex]
         perp_exchanges = [ex for ex in configured_exchanges if 'perpetual' in ex]
         
         if not perp_exchanges:
