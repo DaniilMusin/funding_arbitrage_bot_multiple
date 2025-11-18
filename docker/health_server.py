@@ -83,20 +83,26 @@ class HealthChecker:
                 'password': os.getenv('POSTGRES_PASSWORD', 'password')
             }
             
-            # Test connection
-            conn = psycopg2.connect(**db_config)
-            cursor = conn.cursor()
-            cursor.execute('SELECT 1')
-            cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
-            return {'status': 'healthy', 'message': 'Database connection successful'}
-            
+            # Test connection with proper resource cleanup
+            try:
+                conn = psycopg2.connect(**db_config)
+                try:
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute('SELECT 1')
+                        cursor.fetchone()
+                        return {'status': 'healthy', 'message': 'Database connection successful'}
+                    finally:
+                        cursor.close()
+                finally:
+                    conn.close()
+            except psycopg2.Error as db_err:
+                return {'status': 'unhealthy', 'error': f'Database error: {str(db_err)}'}
+
         except ImportError:
             return {'status': 'warning', 'message': 'psycopg2 not available, skipping database check'}
         except Exception as e:
-            return {'status': 'unhealthy', 'error': str(e)}
+            return {'status': 'unhealthy', 'error': f'Unexpected error: {str(e)}'}
     
     def check_configuration(self) -> Dict[str, Any]:
         """Check configuration validity."""

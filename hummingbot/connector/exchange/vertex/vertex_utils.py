@@ -1,6 +1,6 @@
 import numbers
+import secrets
 from decimal import Decimal
-from random import randint
 from typing import Any, Dict, Optional
 
 from pydantic import ConfigDict, Field, SecretStr
@@ -122,8 +122,14 @@ def generate_expiration(timestamp: float = None, order_type: Optional[str] = Non
 
 
 def generate_nonce(timestamp: float, expiry_ms: int = 90) -> int:
+    """Generate a cryptographically secure nonce for API authentication.
+
+    Uses secrets module for secure random number generation to prevent
+    nonce prediction attacks and replay vulnerabilities.
+    """
     unix_epoch_ms = int((timestamp * 1000) + (expiry_ms * 1000))
-    nonce = (unix_epoch_ms << 20) + randint(1, 1001)
+    # Use secrets.randbelow for cryptographically secure random (1-1000)
+    nonce = (unix_epoch_ms << 20) + secrets.randbelow(1000) + 1
     return nonce
 
 
