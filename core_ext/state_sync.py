@@ -8,9 +8,13 @@ from hummingbot.client.hummingbot_application import HummingbotApplication
 
 
 async def sync_loop():
-    """Continuously sync open positions into a Postgres table."""
+    """Continuously sync open positions into a Postgres table.
+
+    Implements proper connection cleanup to prevent resource leaks.
+    """
     dsn = os.environ.get("STATE_SYNC_DSN", "postgresql://localhost/postgres")
-    conn = await asyncpg.connect(dsn)
+
+    # Prepare SQL outside connection to avoid any early exceptions with open connection
     insert_sql = (
         "INSERT INTO active_positions("
         "id, controller_id, connector_name, trading_pair, side, timestamp, "
@@ -18,7 +22,11 @@ async def sync_loop():
         "cum_fees_quote) "
         "VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)"
     )
+
+    # Create connection inside try block to ensure cleanup on any exception
+    conn = None
     try:
+        conn = await asyncpg.connect(dsn)
         while True:
             app = HummingbotApplication.main_application()
             positions: Sequence = []
@@ -44,4 +52,6 @@ async def sync_loop():
                     )
             await asyncio.sleep(1)
     finally:
-        await conn.close()
+        # Ensure connection cleanup even if connection failed
+        if conn is not None:
+            await conn.close()

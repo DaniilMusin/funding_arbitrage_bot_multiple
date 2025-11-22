@@ -56,7 +56,13 @@ class RiskWrappedFundingArb(FundingRateArbStrategy):
         for name, connector in self.connectors.items():
             try:
                 last = connector.user_stream_tracker.data_source.last_recv_time
-            except Exception:
+            except (AttributeError, TypeError) as e:
+                # Connector may not have user stream tracker or data source
+                self.logger().debug(f"Could not check WS latency for {name}: {e}")
+                continue
+            except Exception as e:
+                # Log unexpected errors but continue checking other connectors
+                self.logger().warning(f"Unexpected error checking WS latency for {name}: {e}")
                 continue
             if last > 0 and self.current_timestamp - last > threshold:
                 self.logger().warning(f"WebSocket latency on {name} over {threshold}s. Stopping strategy.")

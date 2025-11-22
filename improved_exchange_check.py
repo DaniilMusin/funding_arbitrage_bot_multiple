@@ -10,7 +10,7 @@ import hmac
 import hashlib
 import base64
 import json
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 
 class ImprovedExchangeChecker:
@@ -35,7 +35,7 @@ class ImprovedExchangeChecker:
         if self.session:
             await self.session.close()
     
-    async def check_bybit_perpetual(self) -> Dict[str, any]:
+    async def check_bybit_perpetual(self) -> Dict[str, Any]:
         """Проверка подключения к Bybit Perpetual"""
         try:
             # Проверяем публичный API с правильными заголовками
@@ -73,7 +73,7 @@ class ImprovedExchangeChecker:
                 "message": f"Ошибка подключения к Bybit Perpetual: {str(e)}"
             }
     
-    async def check_kucoin_perpetual(self) -> Dict[str, any]:
+    async def check_kucoin_perpetual(self) -> Dict[str, Any]:
         """Проверка подключения к KuCoin Perpetual"""
         try:
             url = "https://api-futures.kucoin.com/api/v1/timestamp"
@@ -104,7 +104,7 @@ class ImprovedExchangeChecker:
                 "message": f"Ошибка подключения к KuCoin Perpetual: {str(e)}"
             }
     
-    async def check_binance_spot(self) -> Dict[str, any]:
+    async def check_binance_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Binance Spot"""
         try:
             # Попробуем альтернативный URL для Binance
@@ -142,7 +142,7 @@ class ImprovedExchangeChecker:
                 "message": f"Ошибка подключения к Binance Spot: {str(e)}"
             }
     
-    async def check_okx_spot(self) -> Dict[str, any]:
+    async def check_okx_spot(self) -> Dict[str, Any]:
         """Проверка подключения к OKX Spot"""
         try:
             url = "https://www.okx.com/api/v5/public/time"
@@ -174,7 +174,7 @@ class ImprovedExchangeChecker:
                 "message": f"Ошибка подключения к OKX Spot: {str(e)}"
             }
     
-    async def check_kraken_spot(self) -> Dict[str, any]:
+    async def check_kraken_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Kraken Spot"""
         try:
             url = "https://api.kraken.com/0/public/Time"
@@ -206,7 +206,7 @@ class ImprovedExchangeChecker:
                 "message": f"Ошибка подключения к Kraken Spot: {str(e)}"
             }
     
-    async def check_gate_io_spot(self) -> Dict[str, any]:
+    async def check_gate_io_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Gate.io Spot"""
         try:
             url = "https://api.gateio.ws/api/v4/spot/time"
@@ -237,7 +237,7 @@ class ImprovedExchangeChecker:
                 "message": f"Ошибка подключения к Gate.io Spot: {str(e)}"
             }
     
-    async def check_htx_spot(self) -> Dict[str, any]:
+    async def check_htx_spot(self) -> Dict[str, Any]:
         """Проверка подключения к HTX (Huobi) Spot"""
         try:
             url = "https://api.huobi.pro/v2/reference/currencies"
@@ -268,7 +268,7 @@ class ImprovedExchangeChecker:
                 "message": f"Ошибка подключения к HTX Spot: {str(e)}"
             }
     
-    async def check_mexc_spot(self) -> Dict[str, any]:
+    async def check_mexc_spot(self) -> Dict[str, Any]:
         """Проверка подключения к MEXC Spot"""
         try:
             url = "https://www.mexc.com/api/platform/spot/market/v2/currencies"

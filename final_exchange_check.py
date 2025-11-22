@@ -6,7 +6,7 @@
 import asyncio
 import json
 import os
-from typing import Dict
+from typing import Dict, Any
 
 import aiohttp
 
@@ -41,7 +41,7 @@ class FinalExchangeChecker:
         if self.session:
             await self.session.close()
 
-    async def check_bybit_perpetual(self) -> Dict[str, any]:
+    async def check_bybit_perpetual(self) -> Dict[str, Any]:
         """Проверка подключения к Bybit Perpetual"""
         try:
             # Попробуем несколько вариантов URL и заголовков
@@ -90,7 +90,7 @@ class FinalExchangeChecker:
                 "message": f"Ошибка подключения к Bybit Perpetual: {str(e)}"
             }
 
-    async def check_kucoin_perpetual(self) -> Dict[str, any]:
+    async def check_kucoin_perpetual(self) -> Dict[str, Any]:
         """Проверка подключения к KuCoin Perpetual"""
         try:
             url = "https://api-futures.kucoin.com/api/v1/timestamp"
@@ -121,7 +121,7 @@ class FinalExchangeChecker:
                 "message": f"Ошибка подключения к KuCoin Perpetual: {str(e)}"
             }
 
-    async def check_binance_spot(self) -> Dict[str, any]:
+    async def check_binance_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Binance Spot"""
         try:
             # Попробуем альтернативные URL для Binance
@@ -160,7 +160,7 @@ class FinalExchangeChecker:
                 "message": f"Ошибка подключения к Binance Spot: {str(e)}"
             }
 
-    async def check_okx_spot(self) -> Dict[str, any]:
+    async def check_okx_spot(self) -> Dict[str, Any]:
         """Проверка подключения к OKX Spot"""
         try:
             url = "https://www.okx.com/api/v5/public/time"
@@ -192,7 +192,7 @@ class FinalExchangeChecker:
                 "message": f"Ошибка подключения к OKX Spot: {str(e)}"
             }
 
-    async def check_kraken_spot(self) -> Dict[str, any]:
+    async def check_kraken_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Kraken Spot"""
         try:
             url = "https://api.kraken.com/0/public/Time"
@@ -231,7 +231,7 @@ class FinalExchangeChecker:
                 "message": f"Ошибка подключения к Kraken Spot: {str(e)}"
             }
 
-    async def check_gate_io_spot(self) -> Dict[str, any]:
+    async def check_gate_io_spot(self) -> Dict[str, Any]:
         """Проверка подключения к Gate.io Spot"""
         try:
             url = "https://api.gateio.ws/api/v4/spot/time"
@@ -262,7 +262,7 @@ class FinalExchangeChecker:
                 "message": f"Ошибка подключения к Gate.io Spot: {str(e)}"
             }
 
-    async def check_htx_spot(self) -> Dict[str, any]:
+    async def check_htx_spot(self) -> Dict[str, Any]:
         """Проверка подключения к HTX (Huobi) Spot"""
         try:
             # Попробуем несколько URL для HTX
@@ -299,7 +299,7 @@ class FinalExchangeChecker:
                 "message": f"Ошибка подключения к HTX Spot: {str(e)}"
             }
 
-    async def check_mexc_spot(self) -> Dict[str, any]:
+    async def check_mexc_spot(self) -> Dict[str, Any]:
         """Проверка подключения к MEXC Spot"""
         try:
             # Попробуем несколько URL для MEXC
