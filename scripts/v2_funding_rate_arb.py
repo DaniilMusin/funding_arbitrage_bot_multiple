@@ -170,6 +170,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.active_funding_arbitrages = {}
         self.pending_funding_arbitrages = {}  # NEW: positions awaiting validation
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
+        self.pending_validation_max_attempts = 3
 
         # Initialize Telegram alerter for critical event monitoring
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -889,6 +890,13 @@ class FundingRateArbitrage(StrategyV2Base):
         for connector_1 in funding_info_report:
             for connector_2 in funding_info_report:
                 if connector_1 != connector_2:
+                    quote_1 = self.quote_markets_map.get(connector_1, "USDT")
+                    quote_2 = self.quote_markets_map.get(connector_2, "USDT")
+                    if quote_1 != quote_2:
+                        self.logger().warning(
+                            f"Skipping pair {connector_1}/{connector_2} due to mismatched quotes ({quote_1} vs {quote_2})"
+                        )
+                        continue
                     rate_connector_1 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
                     rate_connector_2 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
                     funding_rate_diff = abs(rate_connector_1 - rate_connector_2) * self.funding_profitability_interval
@@ -1025,6 +1033,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         "funding_payments": [],
                         "position_size_quote": position_size_quote,
                         "timestamp": self.current_timestamp,  # Track when pending started
+                        "validation_attempts": 0,
+                        "last_validation_error": None,
                     }
 
                     self.logger().info(f"Position for {token} marked as PENDING. Awaiting validation after execution.")
@@ -1107,8 +1117,30 @@ class FundingRateArbitrage(StrategyV2Base):
                     position_size=float(pending_info["position_size_quote"])
                 )
             else:
-                # FAILURE: Emergency close
-                self.logger().error(f"❌ Position validation FAILED for {token}: {hedge_msg}")
+                pending_info["validation_attempts"] = pending_info.get("validation_attempts", 0) + 1
+                pending_info["last_validation_error"] = hedge_msg
+
+                # Allow fills/partial fills to complete before failing hard
+                recoverable_errors = [
+                    "not filled yet",
+                    "Zero notional value detected",
+                ]
+                if any(err.lower() in hedge_msg.lower() for err in recoverable_errors):
+                    self.logger().info(
+                        f"Pending {token}: waiting for fills ({hedge_msg}). "
+                        f"Attempt {pending_info['validation_attempts']}/{self.pending_validation_max_attempts}"
+                    )
+                    continue
+
+                if pending_info["validation_attempts"] < self.pending_validation_max_attempts:
+                    self.logger().warning(
+                        f"Pending {token}: validation failed ({hedge_msg}). "
+                        f"Retry {pending_info['validation_attempts']}/{self.pending_validation_max_attempts}"
+                    )
+                    continue
+
+                # FAILURE after retries: Emergency close
+                self.logger().error(f"Position validation FAILED for {token}: {hedge_msg}")
                 self.alerter.alert_emergency_close(
                     token=token,
                     reason=f"Position validation failed: {hedge_msg}",
@@ -1116,7 +1148,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         "Exchange 1": connector_1,
                         "Exchange 2": connector_2,
                         "Position Size": f"${pending_info['position_size_quote']}",
-                        "Timestamp": str(self.current_timestamp)
+                        "Timestamp": str(self.current_timestamp),
+                        "Attempts": pending_info["validation_attempts"],
                     }
                 )
                 # Get executors and close them
@@ -1128,7 +1161,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 pending_to_remove.append(token)
                 self.stopped_funding_arbitrages[token].append({
                     **pending_info,
-                    "close_reason": f"Validation failed: {hedge_msg}"
+                    "close_reason": f"Validation failed after retries: {hedge_msg}"
                 })
 
         # Remove processed pending positions
