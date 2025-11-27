@@ -51,12 +51,12 @@ reliability_manager = ReliabilityManager(config)
 async def setup_trading_system():
     # Start reliability monitoring
     await reliability_manager.start()
-    
+
     # Configure exchange rate limits
     reliability_manager.configure_exchange_rate_limit(
         "binance", capacity=1200, refill_rate=20.0
     )
-    
+
     # Register trading callbacks
     reliability_manager.add_trading_halted_callback(on_trading_halted)
     reliability_manager.add_trading_resumed_callback(on_trading_resumed)
@@ -66,23 +66,23 @@ async def execute_trade_with_reliability():
     if not reliability_manager.is_trading_ready():
         print("Trading not ready - aborting")
         return
-    
+
     # Acquire rate limit tokens
     if not await reliability_manager.acquire_rate_limit("binance", tokens=1, is_critical=True):
         print("Rate limited - aborting")
         return
-    
+
     try:
         # Execute trade
         result = await execute_trade()
-        
+
         # Record success for circuit breaker
         reliability_manager.record_success(CircuitBreakerType.ERROR_SERIES)
-        
+
     except Exception as e:
         # Record failure for circuit breaker
         reliability_manager.record_failure(
-            CircuitBreakerType.ERROR_SERIES, 
+            CircuitBreakerType.ERROR_SERIES,
             {"error": str(e)}
         )
         raise
@@ -92,7 +92,7 @@ async def update_system_status():
     reliability_manager.update_connection_status(
         "binance", "websocket", ConnectionStatus.CONNECTED, latency_ms=50.0
     )
-    
+
     # Update margin status
     reliability_manager.update_margin_status(
         "binance", available_balance=10000.0, used_margin=2000.0
@@ -119,18 +119,18 @@ Exchange connectors should integrate with the reliability system:
 class ExchangeConnector:
     def __init__(self, reliability_manager):
         self.reliability_manager = reliability_manager
-    
+
     async def _make_api_request(self, method, endpoint, is_critical=False):
         # Check circuit breakers
         if not self.reliability_manager.can_execute_operation(CircuitBreakerType.ERROR_SERIES):
             raise Exception("Circuit breaker tripped")
-        
+
         # Acquire rate limit
         if not await self.reliability_manager.acquire_rate_limit(
             self.exchange_name, tokens=1, is_critical=is_critical
         ):
             raise Exception("Rate limited")
-        
+
         try:
             response = await self._execute_request(method, endpoint)
             self.reliability_manager.record_success(CircuitBreakerType.ERROR_SERIES)
@@ -141,12 +141,12 @@ class ExchangeConnector:
                 {"endpoint": endpoint, "error": str(e)}
             )
             raise
-    
+
     def _on_websocket_connected(self):
         self.reliability_manager.update_connection_status(
             self.exchange_name, "websocket", ConnectionStatus.CONNECTED
         )
-    
+
     def _on_websocket_error(self, error):
         self.reliability_manager.update_connection_status(
             self.exchange_name, "websocket", ConnectionStatus.ERROR, error=str(error)

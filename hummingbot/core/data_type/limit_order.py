@@ -28,14 +28,14 @@ class LimitOrder:
         sells = [o for o in limit_orders if not o.is_buy]
         buys.sort(key=lambda x: x.price, reverse=True)
         sells.sort(key=lambda x: x.price, reverse=True)
-        
+
         orders = []
         columns = ["Order ID", "Type", "Price", "Spread", "Amount", "Age", "Hang"]
         data = []
         sells.extend(buys)
-        
+
         now_timestamp = int(time.time() * 1e6) if end_time_order_age == 0 else end_time_order_age
-        
+
         for order in sells:
             order_id_txt = order.client_order_id if len(order.client_order_id) <= 7 else f"...{order.client_order_id[-4:]}"
             type_txt = "buy" if order.is_buy else "sell"
@@ -48,7 +48,7 @@ class LimitOrder:
                 age_txt = pd.Timestamp(age_seconds, unit='s', tz='UTC').strftime('%H:%M:%S')
             hang_txt = "n/a" if hanging_ids is None else ("yes" if order.client_order_id in hanging_ids else "no")
             data.append([order_id_txt, type_txt, price, spread_txt, quantity, age_txt, hang_txt])
-        
+
         return pd.DataFrame(data=data, columns=columns)
 
     def __init__(self,
