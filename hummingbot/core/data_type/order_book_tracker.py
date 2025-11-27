@@ -150,7 +150,7 @@ class OrderBookTracker:
         await self._order_books_initialized.wait()
         sleep_time = 1
         max_sleep = 30
-        
+
         while True:
             try:
                 outdateds = [t_pair for t_pair, o_book in self._order_books.items()

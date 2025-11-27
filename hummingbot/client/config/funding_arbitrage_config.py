@@ -3,8 +3,7 @@ Configuration validation for funding arbitrage bot using Pydantic Settings.
 Validates environment variables on startup with clear error messages.
 """
 
-import os
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 from pydantic import BaseSettings, validator, Field
 from decimal import Decimal
 import logging
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class ExchangeCredentials(BaseSettings):
     """Base class for exchange API credentials."""
-    
+
     api_key: Optional[str] = None
     secret_key: Optional[str] = None
     passphrase: Optional[str] = None  # For exchanges like OKX, KuCoin
@@ -109,32 +108,32 @@ class DatabaseConfig(BaseSettings):
 class RiskManagementConfig(BaseSettings):
     """Risk management configuration."""
     min_funding_rate_profitability: Decimal = Field(
-        Decimal("0.0005"), 
+        Decimal("0.0005"),
         env="MIN_FUNDING_RATE_PROFITABILITY",
         description="Minimum funding rate spread to enter positions (decimal)"
     )
     max_position_size_quote: Decimal = Field(
-        Decimal("100"), 
+        Decimal("100"),
         env="MAX_POSITION_SIZE_QUOTE",
         description="Maximum position size per exchange in quote currency"
     )
     default_leverage: int = Field(
-        3, 
+        3,
         env="DEFAULT_LEVERAGE",
         description="Default leverage for perpetual futures"
     )
     max_position_concentration: Decimal = Field(
-        Decimal("0.2"), 
+        Decimal("0.2"),
         env="MAX_POSITION_CONCENTRATION",
         description="Maximum percentage of portfolio in single asset"
     )
     stop_loss_percentage: Decimal = Field(
-        Decimal("0.02"), 
+        Decimal("0.02"),
         env="STOP_LOSS_PERCENTAGE",
         description="Stop loss percentage for individual positions"
     )
     max_concurrent_positions: int = Field(
-        5, 
+        5,
         env="MAX_CONCURRENT_POSITIONS",
         description="Maximum number of simultaneous positions"
     )
@@ -164,22 +163,22 @@ class RiskManagementConfig(BaseSettings):
 class TimingConfig(BaseSettings):
     """Strategy timing configuration."""
     funding_rate_check_interval: int = Field(
-        300, 
+        300,
         env="FUNDING_RATE_CHECK_INTERVAL",
         description="How often to check funding rates (seconds)"
     )
     position_rebalance_interval: int = Field(
-        3600, 
+        3600,
         env="POSITION_REBALANCE_INTERVAL",
         description="How often to rebalance positions (seconds)"
     )
     order_timeout: int = Field(
-        30, 
+        30,
         env="ORDER_TIMEOUT",
         description="Order execution timeout (seconds)"
     )
     max_funding_rate_age: int = Field(
-        900, 
+        900,
         env="MAX_FUNDING_RATE_AGE",
         description="Maximum age of funding rate data (seconds)"
     )
@@ -237,7 +236,7 @@ class LoggingConfig(BaseSettings):
 
 class FundingArbitrageConfig(BaseSettings):
     """Main configuration class for funding arbitrage bot."""
-    
+
     # Exchange credentials
     binance: BinanceCredentials = BinanceCredentials()
     binance_perpetual: BinancePerpetualCredentials = BinancePerpetualCredentials()
@@ -249,18 +248,18 @@ class FundingArbitrageConfig(BaseSettings):
     gate_io_perpetual: GateIOPerpetualCredentials = GateIOPerpetualCredentials()
     kucoin: KuCoinCredentials = KuCoinCredentials()
     kucoin_perpetual: KuCoinPerpetualCredentials = KuCoinPerpetualCredentials()
-    
+
     # Configuration sections
     database: DatabaseConfig = DatabaseConfig()
     risk: RiskManagementConfig = RiskManagementConfig()
     timing: TimingConfig = TimingConfig()
     network: NetworkConfig = NetworkConfig()
     logging: LoggingConfig = LoggingConfig()
-    
+
     # Trading mode
     paper_trading_mode: bool = Field(False, env="PAPER_TRADING_MODE")
     paper_trading_balance: Decimal = Field(Decimal("10000"), env="PAPER_TRADING_BALANCE")
-    
+
     # Feature flags
     enable_experimental_features: bool = Field(False, env="ENABLE_EXPERIMENTAL_FEATURES")
     debug_mode: bool = Field(False, env="DEBUG_MODE")
@@ -276,7 +275,7 @@ class FundingArbitrageConfig(BaseSettings):
         Returns dict of missing credentials by exchange.
         """
         missing_credentials = {}
-        
+
         exchanges = {
             'binance': self.binance,
             'binance_perpetual': self.binance_perpetual,
@@ -289,7 +288,7 @@ class FundingArbitrageConfig(BaseSettings):
             'kucoin': self.kucoin,
             'kucoin_perpetual': self.kucoin_perpetual,
         }
-        
+
         for exchange_name, credentials in exchanges.items():
             missing = []
             if not credentials.api_key:
@@ -299,10 +298,10 @@ class FundingArbitrageConfig(BaseSettings):
             if hasattr(credentials, 'passphrase') and exchange_name in ['okx', 'okx_perpetual', 'kucoin', 'kucoin_perpetual']:
                 if not credentials.passphrase:
                     missing.append('passphrase')
-            
+
             if missing:
                 missing_credentials[exchange_name] = missing
-        
+
         return missing_credentials
 
     def get_configured_exchanges(self) -> List[str]:
@@ -321,7 +320,7 @@ class FundingArbitrageConfig(BaseSettings):
         Returns list of validation errors.
         """
         errors = []
-        
+
         # Check that at least one exchange pair is configured
         configured_exchanges = self.get_configured_exchanges()
         if len(configured_exchanges) < 2:
@@ -329,22 +328,21 @@ class FundingArbitrageConfig(BaseSettings):
                 f"At least 2 exchanges must be configured for arbitrage. "
                 f"Currently configured: {len(configured_exchanges)}"
             )
-        
-        # Check that we have both spot and perpetual exchanges if possible
-        spot_exchanges = [ex for ex in configured_exchanges if 'perpetual' not in ex]
+
+        # Check that we have perpetual exchanges configured
         perp_exchanges = [ex for ex in configured_exchanges if 'perpetual' in ex]
-        
+
         if not perp_exchanges:
             errors.append("At least one perpetual exchange must be configured")
-        
+
         # Validate position sizing
         if self.risk.max_position_size_quote <= 0:
             errors.append("Maximum position size must be greater than 0")
-        
+
         # Validate timing parameters
         if self.timing.funding_rate_check_interval < 60:
             errors.append("Funding rate check interval should be at least 60 seconds")
-        
+
         return errors
 
 
@@ -355,26 +353,26 @@ def load_and_validate_config() -> FundingArbitrageConfig:
     """
     try:
         config = FundingArbitrageConfig()
-        
+
         # Validate trading requirements
         errors = config.validate_trading_requirements()
         if errors:
             error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {err}" for err in errors)
             raise ValueError(error_msg)
-        
+
         # Log configured exchanges
         configured_exchanges = config.get_configured_exchanges()
         logger.info(f"Successfully loaded configuration with {len(configured_exchanges)} exchanges: {configured_exchanges}")
-        
+
         # Warn about missing exchange credentials
         missing_creds = config.validate_exchange_connectivity()
         if missing_creds:
             logger.warning("Some exchanges are missing credentials:")
             for exchange, missing in missing_creds.items():
                 logger.warning(f"  {exchange}: missing {missing}")
-        
+
         return config
-        
+
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
         raise

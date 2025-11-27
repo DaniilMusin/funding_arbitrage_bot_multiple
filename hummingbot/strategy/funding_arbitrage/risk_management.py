@@ -39,7 +39,7 @@ class RiskLimit:
     max_value: Decimal
     warning_threshold: Decimal  # % of max_value to trigger warning
     description: str
-    
+
     def get_warning_level(self) -> Decimal:
         """Get the value at which warnings should trigger."""
         return self.max_value * self.warning_threshold
@@ -69,7 +69,7 @@ class HedgeGap:
     gap_amount: Decimal  # Absolute difference
     gap_percentage: Decimal  # Relative to larger position
     timestamp: float
-    
+
     @property
     def gap_risk_score(self) -> Decimal:
         """Calculate risk score based on gap size."""
@@ -97,7 +97,7 @@ class RiskManager:
     Comprehensive risk management for funding arbitrage positions.
     Monitors limits, liquidity, and hedge gaps.
     """
-    
+
     def __init__(self, config: Optional[Dict] = None):
         self.config = config or {}
         self.risk_limits = self._initialize_risk_limits()
@@ -105,7 +105,7 @@ class RiskManager:
         self.hedge_pairs: Dict[str, List[str]] = defaultdict(list)  # trading_pair -> [position_ids]
         self.liquidity_cache: Dict[str, LiquidityMetrics] = {}
         self.violation_history: List[Dict] = []
-        
+
     def _initialize_risk_limits(self) -> Dict[LimitType, RiskLimit]:
         """Initialize default risk limits."""
         return {
@@ -146,8 +146,8 @@ class RiskManager:
                 description="Maximum leverage per position"
             ),
         }
-    
-    def check_position_limits(self, 
+
+    def check_position_limits(self,
                             exchange: str,
                             subaccount: Optional[str],
                             trading_pair: str,
@@ -155,13 +155,13 @@ class RiskManager:
                             proposed_leverage: Decimal) -> Tuple[bool, List[str], RiskLevel]:
         """
         Check if a proposed position would violate risk limits.
-        
+
         Returns:
             Tuple of (can_open, violation_messages, risk_level)
         """
         violations = []
         warnings = []
-        
+
         # Check leverage limit
         leverage_limit = self.risk_limits[LimitType.LEVERAGE]
         if proposed_leverage > leverage_limit.max_value:
@@ -172,7 +172,7 @@ class RiskManager:
             warnings.append(
                 f"Leverage {proposed_leverage} approaching limit {leverage_limit.max_value}"
             )
-        
+
         # Check notional per exchange
         exchange_notional = self._get_exchange_notional(exchange) + proposed_notional
         exchange_limit = self.risk_limits[LimitType.NOTIONAL_PER_EXCHANGE]
@@ -184,7 +184,7 @@ class RiskManager:
             warnings.append(
                 f"Exchange {exchange} notional {exchange_notional} approaching limit"
             )
-        
+
         # Check notional per subaccount
         if subaccount:
             subaccount_notional = self._get_subaccount_notional(exchange, subaccount) + proposed_notional
@@ -197,7 +197,7 @@ class RiskManager:
                 warnings.append(
                     f"Subaccount {subaccount} notional approaching limit"
                 )
-        
+
         # Check total notional
         total_notional = self._get_total_notional() + proposed_notional
         total_limit = self.risk_limits[LimitType.TOTAL_NOTIONAL]
@@ -207,7 +207,7 @@ class RiskManager:
             )
         elif total_notional > total_limit.get_warning_level():
             warnings.append("Total notional approaching limit")
-        
+
         # Check concentration
         pair_notional = self._get_pair_notional(trading_pair) + proposed_notional
         concentration_pct = pair_notional / total_notional if total_notional > 0 else Decimal('0')
@@ -218,7 +218,7 @@ class RiskManager:
             )
         elif concentration_pct > concentration_limit.get_warning_level():
             warnings.append(f"Concentration in {trading_pair} approaching limit")
-        
+
         # Determine risk level
         if violations:
             risk_level = RiskLevel.CRITICAL
@@ -232,11 +232,11 @@ class RiskManager:
         else:
             risk_level = RiskLevel.LOW
             can_open = True
-        
+
         all_messages = violations + warnings
-        
+
         return can_open, all_messages, risk_level
-    
+
     def check_liquidity_risk(self,
                            exchange: str,
                            trading_pair: str,
@@ -270,22 +270,22 @@ class RiskManager:
             return False, f"High market impact expected: {impact_score:.2%}", impact_score
 
         return True, f"Acceptable liquidity risk: {impact_score:.2%} impact", impact_score
-    
+
     def add_position(self, position: PositionInfo) -> str:
         """
         Add a new position to tracking.
-        
+
         Returns:
             Position ID for tracking
         """
         position_id = f"{position.exchange}_{position.trading_pair}_{position.side}_{int(time.time())}"
         self.positions[position_id] = position
         self.hedge_pairs[position.trading_pair].append(position_id)
-        
+
         logger.info(f"Added position {position_id}: {position.notional_amount} {position.trading_pair} on {position.exchange}")
-        
+
         return position_id
-    
+
     def remove_position(self, position_id: str):
         """Remove a position from tracking."""
         if position_id in self.positions:
@@ -315,20 +315,20 @@ class RiskManager:
 
         if to_remove:
             logger.info(f"Removed {len(to_remove)} positions for {exchange}/{trading_pair}")
-    
+
     def update_liquidity_metrics(self, metrics: LiquidityMetrics):
         """Update liquidity metrics for an exchange/pair."""
         key = f"{metrics.exchange}_{metrics.trading_pair}"
         self.liquidity_cache[key] = metrics
-    
+
     def calculate_hedge_gaps(self) -> List[HedgeGap]:
         """Calculate current hedge gaps for all trading pairs."""
         gaps = []
-        
+
         for trading_pair, position_ids in self.hedge_pairs.items():
             if len(position_ids) < 2:
                 continue  # No hedge to calculate
-            
+
             # Group positions by exchange and side
             exchange_positions = defaultdict(list)
             for pos_id in position_ids:
@@ -337,31 +337,31 @@ class RiskManager:
                 position = self.positions[pos_id]
                 key = f"{position.exchange}_{position.side}"
                 exchange_positions[key].append(position)
-            
+
             # Find hedge pairs (long vs short)
             longs = []
             shorts = []
-            
+
             for key, positions in exchange_positions.items():
                 exchange, side = key.rsplit('_', 1)
                 total_notional = sum(p.notional_amount for p in positions)
-                
+
                 if side == 'long':
                     longs.append((exchange, total_notional))
                 else:
                     shorts.append((exchange, total_notional))
-            
+
             # Calculate gaps between all long/short pairs
             for long_exchange, long_notional in longs:
                 for short_exchange, short_notional in shorts:
                     if long_exchange == short_exchange:
                         continue  # Same exchange
-                    
+
                     gap_amount = abs(long_notional - short_notional)
                     larger_position = max(long_notional, short_notional)
                     # CRITICAL FIX: Ensure we don't divide by zero
                     gap_percentage = gap_amount / larger_position if larger_position > 0 else Decimal('0')
-                    
+
                     gap = HedgeGap(
                         trading_pair=trading_pair,
                         long_exchange=long_exchange,
@@ -372,18 +372,18 @@ class RiskManager:
                         gap_percentage=gap_percentage,
                         timestamp=time.time()
                     )
-                    
+
                     gaps.append(gap)
-        
+
         return gaps
-    
+
     def check_hedge_gap_violations(self) -> List[Tuple[HedgeGap, str]]:
         """Check for hedge gap violations."""
         gaps = self.calculate_hedge_gaps()
         violations = []
-        
+
         gap_limit = self.risk_limits[LimitType.HEDGE_GAP]
-        
+
         for gap in gaps:
             if gap.gap_percentage > gap_limit.max_value:
                 violations.append((
@@ -395,14 +395,14 @@ class RiskManager:
                     gap,
                     f"Hedge gap {gap.gap_percentage:.2%} approaching limit for {gap.trading_pair}"
                 ))
-        
+
         return violations
-    
+
     def get_risk_summary(self) -> Dict:
         """Get comprehensive risk summary."""
         hedge_gaps = self.calculate_hedge_gaps()
         gap_violations = self.check_hedge_gap_violations()
-        
+
         return {
             'total_positions': len(self.positions),
             'total_notional': self._get_total_notional(),
@@ -414,51 +414,51 @@ class RiskManager:
             'liquidity_pairs': len(self.liquidity_cache),
             'risk_limit_utilization': self._get_limit_utilization(),
         }
-    
+
     def _get_exchange_notional(self, exchange: str) -> Decimal:
         """Get total notional for an exchange."""
         return sum(
             pos.notional_amount for pos in self.positions.values()
             if pos.exchange == exchange
         )
-    
+
     def _get_subaccount_notional(self, exchange: str, subaccount: str) -> Decimal:
         """Get total notional for a subaccount."""
         return sum(
             pos.notional_amount for pos in self.positions.values()
             if pos.exchange == exchange and pos.subaccount == subaccount
         )
-    
+
     def _get_total_notional(self) -> Decimal:
         """Get total notional across all positions."""
         return sum(pos.notional_amount for pos in self.positions.values())
-    
+
     def _get_pair_notional(self, trading_pair: str) -> Decimal:
         """Get total notional for a trading pair."""
         return sum(
             pos.notional_amount for pos in self.positions.values()
             if pos.trading_pair == trading_pair
         )
-    
+
     def _get_exchange_exposures(self) -> Dict[str, Decimal]:
         """Get notional exposure by exchange."""
         exposures = defaultdict(Decimal)
         for pos in self.positions.values():
             exposures[pos.exchange] += pos.notional_amount
         return dict(exposures)
-    
+
     def _get_pair_concentrations(self) -> Dict[str, Decimal]:
         """Get concentration percentages by trading pair."""
         total = self._get_total_notional()
         if total == 0:
             return {}
-        
+
         concentrations = defaultdict(Decimal)
         for pos in self.positions.values():
             concentrations[pos.trading_pair] += pos.notional_amount
-        
+
         return {pair: notional / total for pair, notional in concentrations.items()}
-    
+
     def _get_limit_utilization(self) -> Dict[str, Decimal]:
         """Get utilization percentage for each risk limit."""
         utilization = {}

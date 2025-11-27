@@ -54,34 +54,34 @@ class OrderBook(PubSub):
             self._bid_book.append(bid)
         for ask in asks:
             self._ask_book.append(ask)
-        
+
         # Sort books
         self._bid_book.sort(key=lambda x: x.price, reverse=True)
         self._ask_book.sort(key=lambda x: x.price)
-        
+
         # Update best prices
         if self._bid_book:
             self._best_bid = self._bid_book[0].price
         if self._ask_book:
             self._best_ask = self._ask_book[0].price
-        
+
         self._last_diff_uid = update_id
 
     def c_apply_snapshot(self, bids, asks, update_id):
         # Simplified implementation
         self._bid_book = list(bids)
         self._ask_book = list(asks)
-        
+
         # Sort books
         self._bid_book.sort(key=lambda x: x.price, reverse=True)
         self._ask_book.sort(key=lambda x: x.price)
-        
+
         # Update best prices
         if self._bid_book:
             self._best_bid = self._bid_book[0].price
         if self._ask_book:
             self._best_ask = self._ask_book[0].price
-        
+
         self._snapshot_uid = update_id
 
     def c_apply_trade(self, trade_event):

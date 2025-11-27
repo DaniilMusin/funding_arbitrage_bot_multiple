@@ -1,18 +1,16 @@
 import asyncio
 from decimal import Decimal
-from typing import Dict, List, Iterator, Mapping, Optional, TYPE_CHECKING
+from typing import Dict, List, Mapping, Optional, TYPE_CHECKING
 
 from bidict import bidict
 
 from hummingbot.connector.budget_checker import BudgetChecker
 from hummingbot.connector.connector_base import ConnectorBase
-from hummingbot.core.data_type.common import OrderType, PriceType, TradeType
+from hummingbot.core.data_type.common import OrderType
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.data_type.order_book import OrderBook
-from hummingbot.core.data_type.order_book_query_result import ClientOrderBookQueryResult, OrderBookQueryResult
-from hummingbot.core.data_type.order_book_row import ClientOrderBookRow
+from hummingbot.core.data_type.order_book_query_result import ClientOrderBookQueryResult
 from hummingbot.core.data_type.order_book_tracker import OrderBookTracker
-from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee
 from hummingbot.core.utils.async_utils import safe_gather
 
 if TYPE_CHECKING:
@@ -124,11 +122,11 @@ class ExchangeBase(ConnectorBase):
         return (self.get_price(trading_pair, True) + self.get_price(trading_pair, False)) / Decimal("2")
 
     def c_buy(self, trading_pair: str, amount, order_type=OrderType.MARKET,
-                   price=s_decimal_NaN, kwargs={}):
+              price=s_decimal_NaN, kwargs={}):
         return self.buy(trading_pair, amount, order_type, price, **kwargs)
 
     def c_sell(self, trading_pair: str, amount, order_type=OrderType.MARKET,
-                    price=s_decimal_NaN, kwargs={}):
+               price=s_decimal_NaN, kwargs={}):
         return self.sell(trading_pair, amount, order_type, price, **kwargs)
 
     def c_cancel(self, trading_pair: str, client_order_id: str):
@@ -138,13 +136,13 @@ class ExchangeBase(ConnectorBase):
         raise NotImplementedError
 
     def c_get_fee(self,
-                          base_currency: str,
-                          quote_currency: str,
-                          order_type,
-                          order_side,
-                          amount,
-                          price,
-                          is_maker = None):
+                  base_currency: str,
+                  quote_currency: str,
+                  order_type,
+                  order_side,
+                  amount,
+                  price,
+                  is_maker=None):
         return self.get_fee(base_currency, quote_currency, order_type, order_side, amount, price, is_maker)
 
     def c_get_order_book(self, trading_pair: str):
@@ -157,7 +155,7 @@ class ExchangeBase(ConnectorBase):
         order_book = self.c_get_order_book(trading_pair)
         try:
             top_price = Decimal(str(order_book.c_get_price(is_buy)))
-        except EnvironmentError as e:
+        except EnvironmentError:
             self.logger().warning(f"{'Ask' if is_buy else 'Bid'} orderbook for {trading_pair} is empty.")
             return s_decimal_NaN
         return self.c_quantize_order_price(trading_pair, top_price)

@@ -46,7 +46,7 @@ class PubSub:
     def c_add_listener(self, event_tag: int, listener: EventListener):
         if event_tag not in self._events:
             self._events[event_tag] = set()
-        
+
         listener_weakref = weakref.ref(listener)
         self._events[event_tag].add(listener_weakref)
 
@@ -56,32 +56,32 @@ class PubSub:
     def c_remove_listener(self, event_tag: int, listener: EventListener):
         if event_tag not in self._events:
             return
-        
+
         # Find and remove the weakref for this listener
         to_remove = None
         for weakref_listener in self._events[event_tag]:
             if weakref_listener() == listener:
                 to_remove = weakref_listener
                 break
-        
+
         if to_remove:
             self._events[event_tag].discard(to_remove)
-        
+
         self.c_remove_dead_listeners(event_tag)
 
     def c_remove_dead_listeners(self, event_tag: int):
         if event_tag not in self._events:
             return
-        
+
         # Remove dead listeners
         dead_refs = set()
         for weakref_listener in self._events[event_tag]:
             if weakref_listener() is None:
                 dead_refs.add(weakref_listener)
-        
+
         for dead_ref in dead_refs:
             self._events[event_tag].discard(dead_ref)
-        
+
         # Remove empty event entries
         if not self._events[event_tag]:
             del self._events[event_tag]
@@ -107,7 +107,7 @@ class PubSub:
 
         # Create a copy to avoid modification during iteration
         listeners_copy = list(self._events[event_tag])
-        
+
         for weakref_listener in listeners_copy:
             listener = weakref_listener()
             if listener is not None:

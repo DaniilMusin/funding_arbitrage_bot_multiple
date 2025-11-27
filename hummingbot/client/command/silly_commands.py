@@ -5,7 +5,7 @@ from typing import (
 from hummingbot.core.utils.async_utils import safe_ensure_future
 
 if TYPE_CHECKING:
-    from hummingbot.client.hummingbot_application import HummingbotApplication
+    from hummingbot.client.hummingbot_application import HummingbotApplication  # noqa: F401
 
 RESOURCES_PATH = "hummingbot/client/command/silly_resources/"
 

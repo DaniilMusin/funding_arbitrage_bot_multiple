@@ -13,7 +13,7 @@ __all__ = [
     'FundingArbitrageStrategy',
     'FundingArbitrageConfig',
     'EdgeCalculator',
-    'EdgeTracker', 
+    'EdgeTracker',
     'EdgeDecomposition',
     'FundingScheduler',
     'SettlementStatus',

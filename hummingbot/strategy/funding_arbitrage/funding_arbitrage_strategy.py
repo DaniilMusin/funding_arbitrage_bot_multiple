@@ -63,7 +63,7 @@ class FundingArbitrageConfig:
 class FundingArbitrageStrategy(StrategyPyBase):
     """
     Advanced funding arbitrage strategy with comprehensive risk management.
-    
+
     Features:
     - Edge decomposition and transparency
     - Precise funding settlement timing
@@ -71,32 +71,32 @@ class FundingArbitrageStrategy(StrategyPyBase):
     - Position/balance reconciliation
     - Margin monitoring and ADL protection
     """
-    
+
     @classmethod
     def logger(cls) -> HummingbotLogger:
         global logger
         if logger is None:
             logger = logging.getLogger(__name__)
         return logger
-    
+
     def __init__(self,
                  exchanges: Dict[str, ConnectorBase],
                  config: FundingArbitrageConfig,
                  trading_pairs: List[str]):
         """
         Initialize funding arbitrage strategy.
-        
+
         Args:
             exchanges: Dict of exchange name -> connector
             config: Strategy configuration
             trading_pairs: List of trading pairs to monitor
         """
         super().__init__()
-        
+
         self.exchanges = exchanges
         self.config = config
         self.trading_pairs = trading_pairs
-        
+
         # Initialize components
         self.edge_calculator = EdgeCalculator(min_edge_required=config.min_edge_required)
         self.edge_tracker = EdgeTracker()
@@ -107,7 +107,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             'max_leverage': str(config.max_leverage),
             'max_hedge_gap_pct': str(config.max_hedge_gap_percentage),
         })
-        
+
         # Reconciliation system
         self.position_tracker = PositionTracker()
         self.reconciliation_engine = ReconciliationEngine(
@@ -118,13 +118,13 @@ class FundingArbitrageStrategy(StrategyPyBase):
             self.reconciliation_engine,
             config.reconciliation_interval_seconds
         )
-        
+
         # Margin monitoring
         self.margin_monitor = MarginMonitor(
             max_allowed_leverage=config.max_leverage,
             auto_reduce_enabled=config.auto_leverage_reduction
         )
-        
+
         # State tracking
         self.active_positions: Dict[str, Dict] = {}  # position_id -> position_data
         self.funding_rates: Dict[str, Dict[str, FundingInfo]] = {}  # exchange -> pair -> FundingInfo
@@ -196,32 +196,32 @@ class FundingArbitrageStrategy(StrategyPyBase):
             MarginAction.REDUCE_LEVERAGE,
             self._handle_leverage_reduction
         )
-        
+
     async def _handle_emergency_exit(self, account_key: str, margin_info: MarginInfo):
         """Handle emergency exit due to margin issues."""
         self.logger().critical(f"Emergency exit triggered for {account_key}")
         self.emergency_stop_active = True
-        
+
         # Close all positions on the affected exchange
         exchange_name = margin_info.exchange
         await self._close_all_positions_on_exchange(exchange_name)
-        
+
     async def _handle_leverage_reduction(self, position_id: str, new_leverage: Decimal):
         """Handle leverage reduction for a position."""
         if position_id in self.active_positions:
             position_data = self.active_positions[position_id]
             self.logger().info(f"Reducing leverage for {position_id} to {new_leverage}")
-            
+
             # Implement leverage reduction logic here
             # This would involve adjusting position size or adding margin
-            
+
     async def _close_all_positions_on_exchange(self, exchange_name: str):
         """Close all active positions on a specific exchange."""
         positions_to_close = [
             pos_id for pos_id, pos_data in self.active_positions.items()
             if pos_data.get('exchange') == exchange_name
         ]
-        
+
         for position_id in positions_to_close:
             await self._close_position(position_id, "Emergency exit")
 
@@ -369,10 +369,10 @@ class FundingArbitrageStrategy(StrategyPyBase):
                             if exchange_name not in self.funding_rates:
                                 self.funding_rates[exchange_name] = {}
                             self.funding_rates[exchange_name][trading_pair] = funding_info
-                            
+
             except Exception as e:
                 self.logger().warning(f"Failed to update funding rates for {exchange_name}: {e}")
-    
+
     async def _check_arbitrage_opportunities(self):
         """Check for profitable arbitrage opportunities."""
         for trading_pair in self.trading_pairs:
@@ -381,23 +381,23 @@ class FundingArbitrageStrategy(StrategyPyBase):
             for exchange_name, rates in self.funding_rates.items():
                 if trading_pair in rates:
                     pair_funding_rates[exchange_name] = rates[trading_pair]
-            
+
             if len(pair_funding_rates) < 2:
                 continue  # Need at least 2 exchanges
-            
+
             # Find best arbitrage opportunity
             best_opportunity = await self._find_best_opportunity(trading_pair, pair_funding_rates)
-            
+
             if best_opportunity:
                 await self._evaluate_and_execute_opportunity(best_opportunity)
-    
-    async def _find_best_opportunity(self, 
-                                   trading_pair: str, 
+
+    async def _find_best_opportunity(self,
+                                   trading_pair: str,
                                    funding_rates: Dict[str, FundingInfo]) -> Optional[Dict]:
         """Find the best arbitrage opportunity for a trading pair."""
         best_opportunity = None
         best_edge = Decimal("-1")
-        
+
         # Check all exchange pairs
         exchange_names = list(funding_rates.keys())
         for i, long_exchange in enumerate(exchange_names):
@@ -407,7 +407,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     (long_exchange, short_exchange),
                     (short_exchange, long_exchange)
                 ]
-                
+
                 for long_ex, short_ex in opportunities:
                     long_rate = funding_rates[long_ex].rate
                     short_rate = funding_rates[short_ex].rate
@@ -427,12 +427,12 @@ class FundingArbitrageStrategy(StrategyPyBase):
                         self.opportunities_skipped_by_reason['funding_diff_too_small'] = \
                             self.opportunities_skipped_by_reason.get('funding_diff_too_small', 0) + 1
                         continue
-                    
+
                     # Calculate edge decomposition
                     edge = await self._calculate_opportunity_edge(
                         trading_pair, long_ex, short_ex, long_rate, short_rate
                     )
-                    
+
                     if edge and edge.is_profitable and edge.total_edge > best_edge:
                         best_edge = edge.total_edge
                         best_opportunity = {
@@ -445,9 +445,9 @@ class FundingArbitrageStrategy(StrategyPyBase):
                                 'short': short_rate
                             }
                         }
-        
+
         return best_opportunity
-    
+
     async def _calculate_opportunity_edge(self,
                                         trading_pair: str,
                                         long_exchange: str,
@@ -686,14 +686,14 @@ class FundingArbitrageStrategy(StrategyPyBase):
             self.logger().debug(traceback.format_exc())
             return None
 
-    async def _calculate_position_size(self, 
+    async def _calculate_position_size(self,
                                      trading_pair: str,
                                      long_exchange: str,
                                      short_exchange: str) -> Decimal:
         """Calculate safe position size based on risk limits."""
         # Base position size (could be configurable)
         base_size = Decimal("1000")  # $1000 USD equivalent
-        
+
         # Check risk limits
         can_open_long, _, risk_level_long = self.risk_manager.check_position_limits(
             exchange=long_exchange,
@@ -702,7 +702,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             proposed_notional=base_size,
             proposed_leverage=Decimal("1")
         )
-        
+
         can_open_short, _, risk_level_short = self.risk_manager.check_position_limits(
             exchange=short_exchange,
             subaccount=None,
@@ -710,10 +710,10 @@ class FundingArbitrageStrategy(StrategyPyBase):
             proposed_notional=base_size,
             proposed_leverage=Decimal("1")
         )
-        
+
         if not can_open_long or not can_open_short:
             return Decimal("0")
-        
+
         # Adjust size based on risk level
         risk_multipliers = {
             'low': Decimal("1.0"),
@@ -721,14 +721,14 @@ class FundingArbitrageStrategy(StrategyPyBase):
             'high': Decimal("0.3"),
             'critical': Decimal("0")
         }
-        
+
         multiplier = min(
             risk_multipliers.get(risk_level_long.value, Decimal("0")),
             risk_multipliers.get(risk_level_short.value, Decimal("0"))
         )
-        
+
         return base_size * multiplier
-    
+
     async def _evaluate_and_execute_opportunity(self, opportunity: Dict):
         """Evaluate timing and execute arbitrage opportunity."""
         trading_pair = opportunity['trading_pair']
@@ -805,7 +805,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
 
         # Execute the arbitrage
         await self._execute_arbitrage(opportunity)
-    
+
     async def _execute_arbitrage(self, opportunity: Dict):
         """
         Execute the arbitrage trade with proper rollback on failures.
@@ -1061,7 +1061,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             self.logger().error(f"❌ Failed to execute arbitrage: {e}")
             # Position tracking not added since we failed or rolled back
             raise
-    
+
     async def _place_order(self,
                          connector: ConnectorBase,
                          trading_pair: str,
@@ -1334,29 +1334,29 @@ class FundingArbitrageStrategy(StrategyPyBase):
         except Exception as e:
             self.logger().warning(f"Failed to get position size: {e}")
             return Decimal("0")
-    
+
     async def _monitor_existing_positions(self):
         """Monitor existing positions for closing opportunities."""
         positions_to_close = []
-        
+
         for position_id, position_data in self.active_positions.items():
             # Check if position should be closed due to timing
             exchanges = [position_data['long_exchange'], position_data['short_exchange']]
             position_age_minutes = (time.time() - position_data['entry_time']) / 60
-            
+
             should_close, close_reason = self.funding_scheduler.should_close_position(
                 exchanges,
                 position_age_minutes,
                 self.config.min_position_hold_time_minutes
             )
-            
+
             if should_close:
                 positions_to_close.append((position_id, close_reason))
-        
+
         # Close positions that need closing
         for position_id, reason in positions_to_close:
             await self._close_position(position_id, reason)
-    
+
     async def _close_position(self, position_id: str, reason: str):
         """
         Close an arbitrage position by closing both legs.
@@ -1470,7 +1470,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             if position_id in self.active_positions:
                 del self.active_positions[position_id]
             raise
-    
+
     def start(self):
         """Start the strategy."""
         super().start()
@@ -1489,7 +1489,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
         margin_task.add_done_callback(self._handle_background_task_done)
 
         self.logger().info("Funding arbitrage strategy started")
-    
+
     def stop(self):
         """Stop the strategy."""
         # Stop monitoring
@@ -1534,7 +1534,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             self.logger().info("Background task was cancelled")
         except Exception as e:
             self.logger().error(f"Error checking background task result: {e}")
-    
+
     def get_strategy_status(self) -> Dict:
         """Get comprehensive strategy status."""
         return {
