@@ -91,6 +91,7 @@ class PositionMarginInfo:
     maintenance_margin: Decimal
     unrealized_pnl: Decimal
     liquidation_price: Optional[Decimal]
+    current_mark_price: Optional[Decimal]  # Current mark price for the position
     adl_indicator: Optional[int]  # ADL indicator if available (1-5, 5 being highest risk)
     timestamp: float
 
@@ -103,13 +104,32 @@ class PositionMarginInfo:
 
     @property
     def distance_to_liquidation_pct(self) -> Optional[Decimal]:
-        """Distance to liquidation as percentage of position value."""
-        if not self.liquidation_price or self.notional_value == 0:
+        """
+        Distance to liquidation as percentage of current mark price.
+
+        Returns:
+            Percentage distance to liquidation price (positive = safe, negative = in danger)
+            None if liquidation price or current price is not available
+        """
+        if not self.liquidation_price or not self.current_mark_price:
             return None
 
-        # This is simplified - real calculation depends on position side and current price
-        # Would need current mark price to calculate properly
-        return None  # Placeholder
+        if self.current_mark_price == 0:
+            return None
+
+        # Calculate distance based on position side
+        if self.side.lower() == 'long':
+            # For long: liquidation when price drops below liquidation_price
+            # Distance = (current_price - liquidation_price) / current_price
+            distance = self.current_mark_price - self.liquidation_price
+            distance_pct = (distance / self.current_mark_price) * Decimal("100")
+        else:  # short
+            # For short: liquidation when price rises above liquidation_price
+            # Distance = (liquidation_price - current_price) / current_price
+            distance = self.liquidation_price - self.current_mark_price
+            distance_pct = (distance / self.current_mark_price) * Decimal("100")
+
+        return distance_pct
 
 
 @dataclass

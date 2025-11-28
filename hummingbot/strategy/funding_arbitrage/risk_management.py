@@ -316,6 +316,28 @@ class RiskManager:
         if to_remove:
             logger.info(f"Removed {len(to_remove)} positions for {exchange}/{trading_pair}")
 
+    def update_position_notional(self, exchange: str, trading_pair: str, new_notional: Decimal):
+        """
+        Update notional amount for positions matching exchange and trading pair.
+
+        Args:
+            exchange: Exchange name
+            trading_pair: Trading pair symbol
+            new_notional: New notional amount for the position
+        """
+        updated_count = 0
+        for pos_id, pos in self.positions.items():
+            if pos.exchange == exchange and pos.trading_pair == trading_pair:
+                old_notional = pos.notional_amount
+                pos.notional_amount = new_notional
+                updated_count += 1
+                logger.info(
+                    f"Updated position {pos_id} notional: {old_notional} -> {new_notional}"
+                )
+
+        if updated_count == 0:
+            logger.warning(f"No positions found to update for {exchange}/{trading_pair}")
+
     def update_liquidity_metrics(self, metrics: LiquidityMetrics):
         """Update liquidity metrics for an exchange/pair."""
         key = f"{metrics.exchange}_{metrics.trading_pair}"

@@ -22,6 +22,7 @@ from .funding_scheduler import FundingScheduler, SettlementStatus
 from .risk_management import RiskManager, PositionInfo, LiquidityMetrics
 from .reconciliation import ReconciliationEngine, PositionTracker, ReconciliationScheduler
 from .margin_monitoring import MarginMonitor, MarginInfo, PositionMarginInfo, MarginAction
+from .metrics_system import MetricsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,17 @@ class FundingArbitrageStrategy(StrategyPyBase):
             auto_reduce_enabled=config.auto_leverage_reduction
         )
 
+        # Metrics collection system
+        self.metrics = MetricsCollector(
+            enable_file_export=True,
+            export_interval=300  # Export every 5 minutes
+        )
+
+        # Set up metric alerts
+        self.metrics.set_alert_threshold("errors_critical_total", "gt", Decimal("5"))
+        self.metrics.set_alert_threshold("margin_utilization", "gt", Decimal("80"))
+        self.metrics.set_alert_threshold("hedge_gap_max", "gt", Decimal("10"))
+
         # State tracking
         self.active_positions: Dict[str, Dict] = {}  # position_id -> position_data
         self.funding_rates: Dict[str, Dict[str, FundingInfo]] = {}  # exchange -> pair -> FundingInfo
@@ -207,13 +219,139 @@ class FundingArbitrageStrategy(StrategyPyBase):
         await self._close_all_positions_on_exchange(exchange_name)
 
     async def _handle_leverage_reduction(self, position_id: str, new_leverage: Decimal):
-        """Handle leverage reduction for a position."""
-        if position_id in self.active_positions:
-            position_data = self.active_positions[position_id]
-            self.logger().info(f"Reducing leverage for {position_id} to {new_leverage}")
+        """
+        Handle leverage reduction for a position.
 
-            # Implement leverage reduction logic here
-            # This would involve adjusting position size or adding margin
+        Args:
+            position_id: Position identifier
+            new_leverage: Target leverage to reduce to
+        """
+        if position_id not in self.active_positions:
+            self.logger().warning(f"Position {position_id} not found for leverage reduction")
+            return
+
+        position_data = self.active_positions[position_id]
+        self.logger().warning(f"Reducing leverage for {position_id} to {new_leverage}")
+
+        trading_pair = position_data['trading_pair']
+        long_exchange = position_data['long_exchange']
+        short_exchange = position_data['short_exchange']
+        long_amount = position_data.get('long_amount', position_data['notional_amount'])
+        short_amount = position_data.get('short_amount', position_data['notional_amount'])
+
+        # Calculate current leverage
+        current_edge = position_data.get('edge_decomposition')
+        if not current_edge:
+            self.logger().error(f"No edge decomposition found for {position_id}, cannot reduce leverage")
+            return
+
+        current_leverage_long = current_edge.leverage_long
+        current_leverage_short = current_edge.leverage_short
+
+        # Determine which position needs reduction
+        needs_long_reduction = current_leverage_long > new_leverage
+        needs_short_reduction = current_leverage_short > new_leverage
+
+        if not needs_long_reduction and not needs_short_reduction:
+            self.logger().info(f"Position {position_id} already at target leverage {new_leverage}")
+            return
+
+        # Strategy: Partially close positions to reduce effective leverage
+        # Formula: new_size = current_size * (new_leverage / current_leverage)
+
+        long_connector = self.exchanges.get(long_exchange)
+        short_connector = self.exchanges.get(short_exchange)
+
+        if not long_connector or not short_connector:
+            self.logger().error(f"Connectors not found for {position_id}, manual intervention required")
+            return
+
+        try:
+            close_tasks = []
+
+            if needs_long_reduction:
+                # Calculate how much to reduce long position
+                reduction_ratio = (current_leverage_long - new_leverage) / current_leverage_long
+                reduce_amount_long = long_amount * reduction_ratio
+
+                self.logger().info(
+                    f"Reducing long position on {long_exchange} by {reduce_amount_long} "
+                    f"({reduction_ratio:.2%}) to reduce leverage from {current_leverage_long} to {new_leverage}"
+                )
+
+                # Close partial long position (sell)
+                close_tasks.append(
+                    self._place_order(
+                        connector=long_connector,
+                        trading_pair=trading_pair,
+                        is_buy=False,  # SELL to reduce long
+                        amount=reduce_amount_long
+                    )
+                )
+
+                # Update tracked amount
+                position_data['long_amount'] = long_amount - reduce_amount_long
+
+            if needs_short_reduction:
+                # Calculate how much to reduce short position
+                reduction_ratio = (current_leverage_short - new_leverage) / current_leverage_short
+                reduce_amount_short = short_amount * reduction_ratio
+
+                self.logger().info(
+                    f"Reducing short position on {short_exchange} by {reduce_amount_short} "
+                    f"({reduction_ratio:.2%}) to reduce leverage from {current_leverage_short} to {new_leverage}"
+                )
+
+                # Close partial short position (buy)
+                close_tasks.append(
+                    self._place_order(
+                        connector=short_connector,
+                        trading_pair=trading_pair,
+                        is_buy=True,  # BUY to reduce short
+                        amount=reduce_amount_short
+                    )
+                )
+
+                # Update tracked amount
+                position_data['short_amount'] = short_amount - reduce_amount_short
+
+            # Execute reductions in parallel
+            if close_tasks:
+                results = await asyncio.gather(*close_tasks, return_exceptions=True)
+
+                # Check for failures
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        side = "long" if i == 0 else "short"
+                        self.logger().error(f"Failed to reduce {side} position for {position_id}: {result}")
+                        # NOTE: In production, this requires manual intervention
+                        # The position is now unbalanced and needs immediate attention
+                        self.logger().critical(
+                            f"MANUAL INTERVENTION REQUIRED: Position {position_id} {side} reduction failed! "
+                            f"Position may be unbalanced."
+                        )
+                    else:
+                        order_id = result
+                        self.logger().info(f"Leverage reduction order placed: {order_id}")
+
+            # Update risk manager with new position sizes
+            if needs_long_reduction:
+                self.risk_manager.update_position_notional(
+                    long_exchange, trading_pair, position_data['long_amount']
+                )
+            if needs_short_reduction:
+                self.risk_manager.update_position_notional(
+                    short_exchange, trading_pair, position_data['short_amount']
+                )
+
+            self.logger().info(f"Leverage reduction completed for {position_id}")
+
+        except Exception as e:
+            self.logger().error(f"Failed to reduce leverage for {position_id}: {e}")
+            self.logger().critical(
+                f"MANUAL INTERVENTION REQUIRED: Leverage reduction for {position_id} failed! "
+                f"Position may be at risk."
+            )
 
     async def _close_all_positions_on_exchange(self, exchange_name: str):
         """Close all active positions on a specific exchange."""
@@ -448,6 +586,184 @@ class FundingArbitrageStrategy(StrategyPyBase):
 
         return best_opportunity
 
+    async def _get_borrow_rates(self, trading_pair: str, exchanges: List[str]) -> Dict[str, Decimal]:
+        """
+        Get borrow rates for assets from exchanges.
+
+        Args:
+            trading_pair: Trading pair to get borrow rates for
+            exchanges: List of exchanges to check
+
+        Returns:
+            Dict of asset -> borrow rate (annualized)
+        """
+        borrow_rates = {}
+
+        # Parse trading pair to get base and quote assets
+        if '-' in trading_pair:
+            base_asset, quote_asset = trading_pair.split('-', 1)
+        else:
+            # Parse trading pair format like BTCUSDT, ETHUSDC, etc.
+            if trading_pair.endswith(('USDT', 'USDC', 'BUSD', 'TUSD')):
+                base_asset = trading_pair[:-4]
+                quote_asset = trading_pair[-4:]
+            elif trading_pair.endswith(('USD', 'EUR', 'GBP', 'JPY', 'BTC', 'ETH', 'BNB', 'DAI')):
+                base_asset = trading_pair[:-3]
+                quote_asset = trading_pair[-3:]
+            else:
+                base_asset = trading_pair[:-3] if len(trading_pair) > 3 else ''
+                quote_asset = trading_pair[-3:] if len(trading_pair) > 3 else trading_pair
+
+        # Try to get real borrow rates from connectors
+        for asset in [base_asset, quote_asset]:
+            rates_found = []
+
+            for exchange_name in exchanges:
+                connector = self.exchanges.get(exchange_name)
+                if not connector:
+                    continue
+
+                try:
+                    # Try multiple methods connectors might use for borrow rates
+                    borrow_rate = None
+
+                    # Method 1: get_borrow_rate method
+                    if hasattr(connector, 'get_borrow_rate'):
+                        try:
+                            borrow_rate = await connector.get_borrow_rate(asset)
+                        except Exception:
+                            pass
+
+                    # Method 2: get_funding_payment method (some exchanges combine this)
+                    if borrow_rate is None and hasattr(connector, 'get_funding_payment'):
+                        try:
+                            funding_payment = await connector.get_funding_payment(trading_pair)
+                            if funding_payment and hasattr(funding_payment, 'borrow_rate'):
+                                borrow_rate = funding_payment.borrow_rate
+                        except Exception:
+                            pass
+
+                    # Method 3: Check connector's fee/rate configuration
+                    if borrow_rate is None and hasattr(connector, 'borrow_rates'):
+                        try:
+                            borrow_rate = connector.borrow_rates.get(asset)
+                        except Exception:
+                            pass
+
+                    if borrow_rate is not None:
+                        rates_found.append(Decimal(str(borrow_rate)))
+
+                except Exception as e:
+                    self.logger().debug(f"Failed to get borrow rate for {asset} from {exchange_name}: {e}")
+                    continue
+
+            # Use average of found rates, or default
+            if rates_found:
+                borrow_rates[asset] = sum(rates_found) / Decimal(len(rates_found))
+                self.logger().debug(f"Using average borrow rate for {asset}: {borrow_rates[asset]:.6f}")
+            else:
+                # Use reasonable defaults based on asset type
+                if asset in ['USD', 'USDT', 'USDC', 'BUSD', 'TUSD', 'DAI']:
+                    default_rate = Decimal("0.00005")  # 0.005% per 8h = ~5% APR
+                elif asset in ['BTC', 'ETH']:
+                    default_rate = Decimal("0.0001")   # 0.01% per 8h = ~10% APR
+                else:
+                    default_rate = Decimal("0.00015")  # 0.015% per 8h = ~15% APR for altcoins
+
+                borrow_rates[asset] = default_rate
+                self.logger().debug(f"Using default borrow rate for {asset}: {default_rate:.6f}")
+
+        return borrow_rates
+
+    async def _get_slippage_estimates(
+        self,
+        trading_pair: str,
+        exchanges: List[str],
+        notional_amount: Decimal
+    ) -> Dict[str, Decimal]:
+        """
+        Get slippage estimates based on order book depth.
+
+        Args:
+            trading_pair: Trading pair to estimate slippage for
+            exchanges: List of exchanges to check
+            notional_amount: Planned trade size
+
+        Returns:
+            Dict of exchange -> estimated slippage percentage
+        """
+        slippage_estimates = {}
+
+        for exchange_name in exchanges:
+            connector = self.exchanges.get(exchange_name)
+            if not connector:
+                # Use conservative default if connector not found
+                slippage_estimates[exchange_name] = Decimal("0.001")  # 0.1%
+                continue
+
+            try:
+                # Get order book liquidity
+                liquidity = await self._get_order_book_liquidity(connector, trading_pair)
+
+                if not liquidity:
+                    # No liquidity data - use conservative estimate
+                    slippage_estimates[exchange_name] = Decimal("0.001")  # 0.1%
+                    self.logger().debug(
+                        f"No liquidity data for {exchange_name}/{trading_pair}, "
+                        f"using default slippage estimate: 0.1%"
+                    )
+                    continue
+
+                # Calculate slippage based on:
+                # 1. Spread (immediate cost)
+                # 2. Market depth (price impact for notional amount)
+
+                # Base slippage from spread
+                spread_slippage = liquidity.avg_spread_bps / Decimal("10000") / Decimal("2")  # Half spread
+
+                # Depth-based slippage
+                # Compare notional amount to available liquidity
+                available_liquidity = min(liquidity.bid_depth_1pct, liquidity.ask_depth_1pct)
+
+                if available_liquidity > 0:
+                    # Calculate impact ratio
+                    impact_ratio = notional_amount / available_liquidity
+
+                    # Progressive slippage model:
+                    # - Up to 10% of liquidity: minimal additional slippage
+                    # - 10-50% of liquidity: linear additional slippage
+                    # - > 50% of liquidity: exponential additional slippage
+                    if impact_ratio <= Decimal("0.1"):
+                        depth_slippage = impact_ratio * Decimal("0.0001")  # Very small
+                    elif impact_ratio <= Decimal("0.5"):
+                        depth_slippage = Decimal("0.00001") + (impact_ratio - Decimal("0.1")) * Decimal("0.0005")
+                    else:
+                        # Exponential for large trades
+                        depth_slippage = Decimal("0.0002") + (impact_ratio - Decimal("0.5")) * Decimal("0.002")
+                else:
+                    # No liquidity - very high slippage expected
+                    depth_slippage = Decimal("0.005")  # 0.5%
+
+                # Total estimated slippage
+                total_slippage = spread_slippage + depth_slippage
+
+                # Cap slippage at reasonable max (2%)
+                total_slippage = min(total_slippage, Decimal("0.02"))
+
+                slippage_estimates[exchange_name] = total_slippage
+
+                self.logger().debug(
+                    f"Slippage estimate for {exchange_name}/{trading_pair}: "
+                    f"{total_slippage:.4%} (spread={spread_slippage:.4%}, depth={depth_slippage:.4%})"
+                )
+
+            except Exception as e:
+                self.logger().warning(f"Failed to estimate slippage for {exchange_name}: {e}")
+                # Fallback to conservative default
+                slippage_estimates[exchange_name] = Decimal("0.001")  # 0.1%
+
+        return slippage_estimates
+
     async def _calculate_opportunity_edge(self,
                                         trading_pair: str,
                                         long_exchange: str,
@@ -499,13 +815,13 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 # Fallback to defaults if connector not found
                 fees_config[exchange_name] = {'maker': Decimal("0.0002"), 'taker': Decimal("0.0005")}
 
-        # Get borrow rates (simplified - in production would get from exchange APIs)
-        borrow_rates = {'BTC': Decimal("0.0001"), 'USDT': Decimal("0.00005")}
+        # Get borrow rates from exchanges (with fallback to defaults)
+        borrow_rates = await self._get_borrow_rates(trading_pair, [long_exchange, short_exchange])
 
-        # Get slippage estimates (simplified - in production would analyze order book)
-        slippage_estimates = {
-            exchange: Decimal("0.0005") for exchange in [long_exchange, short_exchange]
-        }
+        # Get slippage estimates based on order book depth
+        slippage_estimates = await self._get_slippage_estimates(
+            trading_pair, [long_exchange, short_exchange], notional_amount
+        )
 
         # Calculate edge
         edge = self.edge_calculator.calculate_edge(
@@ -690,9 +1006,24 @@ class FundingArbitrageStrategy(StrategyPyBase):
                                      trading_pair: str,
                                      long_exchange: str,
                                      short_exchange: str) -> Decimal:
-        """Calculate safe position size based on risk limits."""
-        # Base position size (could be configurable)
-        base_size = Decimal("1000")  # $1000 USD equivalent
+        """
+        Calculate safe position size based on risk limits and configuration.
+
+        Uses config.order_amount as the base size, then applies risk multipliers.
+        """
+        # Base position size from configuration (in notional USD value)
+        base_size = self.config.order_amount
+
+        # Note: config.order_amount is per position, we interpret it as notional USD value
+        # For perpetual contracts, this is straightforward
+        # For spot markets with leverage, this would be the base currency amount
+
+        # Validate base_size is reasonable
+        if base_size <= 0:
+            self.logger().warning(
+                f"Invalid order_amount in config: {base_size}, using default $1000"
+            )
+            base_size = Decimal("1000")
 
         # Check risk limits
         can_open_long, _, risk_level_long = self.risk_manager.check_position_limits(
@@ -1537,6 +1868,12 @@ class FundingArbitrageStrategy(StrategyPyBase):
 
     def get_strategy_status(self) -> Dict:
         """Get comprehensive strategy status."""
+        # Update real-time metrics
+        self.metrics.set_gauge("positions_active", Decimal(len(self.active_positions)))
+        self.metrics.set_gauge("positions_total_notional",
+                              sum(Decimal(str(pos.get('notional_amount', 0)))
+                                  for pos in self.active_positions.values()))
+
         return {
             'active_positions': len(self.active_positions),
             'total_trades': self.total_trades_executed,
@@ -1553,4 +1890,6 @@ class FundingArbitrageStrategy(StrategyPyBase):
             },
             'margin_monitoring': self.margin_monitor.get_monitoring_summary(),
             'reconciliation': self.reconciliation_engine.get_reconciliation_metrics(),
+            'metrics': self.metrics.get_summary(window_seconds=3600),
+            'metrics_dashboard': self.metrics.get_dashboard_summary(),
         }
