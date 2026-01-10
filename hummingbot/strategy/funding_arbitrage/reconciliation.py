@@ -5,7 +5,7 @@ Detects discrepancies and provides automatic correction mechanisms.
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple, Any, Set
+from typing import Dict, List, Optional, Tuple, Any, Set, Callable, Awaitable
 from enum import Enum
 import time
 import logging
@@ -423,11 +423,21 @@ class ReconciliationScheduler:
 
     def __init__(self,
                  reconciliation_engine: ReconciliationEngine,
-                 check_interval_seconds: int = 300):  # 5 minutes default
+                 check_interval_seconds: int = 300,  # 5 minutes default
+                 data_provider: Optional[Callable[[], Awaitable[Optional[
+                     Tuple[Dict[str, PositionSnapshot], Dict[str, BalanceSnapshot], Optional[Dict[str, Dict]]]
+                 ]]]] = None):
         self.engine = reconciliation_engine
         self.check_interval = check_interval_seconds
         self.running = False
         self.task: Optional[asyncio.Task] = None
+        self.data_provider = data_provider
+
+    def set_data_provider(self, data_provider: Callable[[], Awaitable[Optional[
+        Tuple[Dict[str, PositionSnapshot], Dict[str, BalanceSnapshot], Optional[Dict[str, Dict]]]
+    ]]]):
+        """Set async data provider for reconciliation inputs."""
+        self.data_provider = data_provider
 
     async def start(self):
         """Start the reconciliation scheduler."""
@@ -453,15 +463,28 @@ class ReconciliationScheduler:
         """Main reconciliation loop."""
         while self.running:
             try:
-                # In a real implementation, this would fetch actual positions/balances
-                # from exchanges and run reconciliation
-                await asyncio.sleep(self.check_interval)
+                if self.data_provider is None:
+                    logger.warning("Reconciliation data provider not set; skipping reconciliation.")
+                    await asyncio.sleep(self.check_interval)
+                    continue
 
-                # Placeholder for actual reconciliation call
-                # result = await self.engine.run_full_reconciliation(actual_positions, actual_balances)
+                data = await self.data_provider()
+                if data is None:
+                    await asyncio.sleep(self.check_interval)
+                    continue
+
+                actual_positions, actual_balances, actual_orders = data
+                await self.engine.run_full_reconciliation(
+                    actual_positions=actual_positions,
+                    actual_balances=actual_balances,
+                    actual_orders=actual_orders,
+                )
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in reconciliation loop: {e}")
                 await asyncio.sleep(min(self.check_interval, 60))  # Wait before retry
+                continue
+
+            await asyncio.sleep(self.check_interval)

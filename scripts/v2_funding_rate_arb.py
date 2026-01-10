@@ -1,4 +1,5 @@
 import os
+from itertools import islice
 from decimal import Decimal
 from typing import Dict, List, Set
 
@@ -66,7 +67,7 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     trade_profitability_condition_to_enter: bool = Field(
         default=False,
         json_schema_extra={
-            "prompt": lambda mi: "Do you want to check the trade profitability condition to enter? (True/False): ",
+            "prompt": lambda mi: "Do you want to check the trade profitability condition to enter- (True/False): ",
             "prompt_on_new": True}
     )
     max_slippage_pct: Decimal = Field(
@@ -78,13 +79,13 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     position_validation_enabled: bool = Field(
         default=True,
         json_schema_extra={
-            "prompt": lambda mi: "Enable position validation after opening? (True/False): ",
+            "prompt": lambda mi: "Enable position validation after opening- (True/False): ",
             "prompt_on_new": False}
     )
     emergency_close_on_imbalance: bool = Field(
         default=True,
         json_schema_extra={
-            "prompt": lambda mi: "Enable emergency close if hedge is imbalanced? (True/False): ",
+            "prompt": lambda mi: "Enable emergency close if hedge is imbalanced- (True/False): ",
             "prompt_on_new": False}
     )
     max_position_imbalance_pct: Decimal = Field(
@@ -108,7 +109,7 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     check_order_book_depth_enabled: bool = Field(
         default=True,
         json_schema_extra={
-            "prompt": lambda mi: "Enable order book depth check? (True/False): ",
+            "prompt": lambda mi: "Enable order book depth check- (True/False): ",
             "prompt_on_new": False}
     )
 
@@ -116,7 +117,10 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
     @classmethod
     def validate_sets(cls, v):
         if isinstance(v, str):
-            return set(v.split(","))
+            items = [item.strip() for item in v.split(",")]
+            return {item for item in items if item}
+        if isinstance(v, (set, list, tuple)):
+            return {str(item).strip() for item in v if str(item).strip()}
         return v
 
 
@@ -198,29 +202,29 @@ class FundingRateArbitrage(StrategyV2Base):
 
         # BUG FIX #20: Add comprehensive startup logging
         self.logger().info("=" * 80)
-        self.logger().info("🚀 FUNDING RATE ARBITRAGE BOT STARTING")
+        self.logger().info(" FUNDING RATE ARBITRAGE BOT STARTING")
         self.logger().info("=" * 80)
-        self.logger().info(f"📅 Timestamp: {timestamp}")
-        self.logger().info(f"📊 Configuration:")
-        self.logger().info(f"   • Connectors: {', '.join(sorted(self.config.connectors))}")
-        self.logger().info(f"   • Tokens: {', '.join(sorted(self.config.tokens))}")
-        self.logger().info(f"   • Leverage: {self.config.leverage}x")
-        self.logger().info(f"   • Min funding rate: {self.config.min_funding_rate_profitability:.4%}")
-        self.logger().info(f"   • Position size: ${self.config.position_size_quote}")
-        self.logger().info(f"   • Max slippage: {self.config.max_slippage_pct:.2%}")
-        self.logger().info(f"   • Min time to funding: {self.config.min_time_to_next_funding_seconds}s")
-        self.logger().info(f"   • Order book depth check: {self.config.check_order_book_depth_enabled}")
+        self.logger().info(f" Timestamp: {timestamp}")
+        self.logger().info(f" Configuration:")
+        self.logger().info(f"   - Connectors: {', '.join(sorted(self.config.connectors))}")
+        self.logger().info(f"   - Tokens: {', '.join(sorted(self.config.tokens))}")
+        self.logger().info(f"   - Leverage: {self.config.leverage}x")
+        self.logger().info(f"   - Min funding rate: {self.config.min_funding_rate_profitability:.4%}")
+        self.logger().info(f"   - Position size: ${self.config.position_size_quote}")
+        self.logger().info(f"   - Max slippage: {self.config.max_slippage_pct:.2%}")
+        self.logger().info(f"   - Min time to funding: {self.config.min_time_to_next_funding_seconds}s")
+        self.logger().info(f"   - Order book depth check: {self.config.check_order_book_depth_enabled}")
         if self.config.check_order_book_depth_enabled:
-            self.logger().info(f"   • Min order book depth: {self.config.min_order_book_depth_multiplier}x position size")
-        self.logger().info(f"   • Position validation: {self.config.position_validation_enabled}")
-        self.logger().info(f"   • Emergency close on imbalance: {self.config.emergency_close_on_imbalance}")
-        self.logger().info(f"   • Max position imbalance: {self.config.max_position_imbalance_pct:.1%}")
+            self.logger().info(f"   - Min order book depth: {self.config.min_order_book_depth_multiplier}x position size")
+        self.logger().info(f"   - Position validation: {self.config.position_validation_enabled}")
+        self.logger().info(f"   - Emergency close on imbalance: {self.config.emergency_close_on_imbalance}")
+        self.logger().info(f"   - Max position imbalance: {self.config.max_position_imbalance_pct:.1%}")
         self.logger().info("=" * 80)
 
         self.apply_initial_setting()
         self.check_quote_currency_consistency()
 
-        self.logger().info("✅ Strategy initialization complete")
+        self.logger().info(" Strategy initialization complete")
         self.logger().info("=" * 80)
 
     def check_quote_currency_consistency(self):
@@ -234,7 +238,7 @@ class FundingRateArbitrage(StrategyV2Base):
             quote_currencies.add(quote)
 
         if len(quote_currencies) > 1:
-            self.logger().warning("⚠️  CRITICAL WARNING: Multiple quote currencies detected!")
+            self.logger().warning("  CRITICAL WARNING: Multiple quote currencies detected!")
             self.logger().warning(f"   Quote currencies in use: {quote_currencies}")
             self.logger().warning("   Risk: USDT can depeg from USD, causing false arbitrage signals!")
             self.logger().warning("   Example: USDT at $0.95 makes BTC-USDT appear cheaper than BTC-USD")
@@ -255,7 +259,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 }
             )
         else:
-            self.logger().info(f"✅ Quote currency check: All exchanges use {list(quote_currencies)[0]}")
+            self.logger().info(f" Quote currency check: All exchanges use {list(quote_currencies)[0]}")
 
     def apply_initial_setting(self):
         """
@@ -271,9 +275,9 @@ class FundingRateArbitrage(StrategyV2Base):
                     # Set position mode with error handling
                     try:
                         connector.set_position_mode(position_mode)
-                        self.logger().info(f"✅ Set {connector_name} position mode to {position_mode}")
+                        self.logger().info(f" Set {connector_name} position mode to {position_mode}")
                     except Exception as e:
-                        self.logger().error(f"❌ Failed to set position mode for {connector_name}: {e}")
+                        self.logger().error(f" Failed to set position mode for {connector_name}: {e}")
                         self.alerter.warning(
                             title="Position Mode Setup Failed",
                             message=f"Could not set {position_mode} mode on {connector_name}",
@@ -292,9 +296,9 @@ class FundingRateArbitrage(StrategyV2Base):
                     for trading_pair in trading_pairs:
                         try:
                             connector.set_leverage(trading_pair, self.config.leverage)
-                            self.logger().debug(f"✅ Set {connector_name} {trading_pair} leverage to {self.config.leverage}x")
+                            self.logger().debug(f" Set {connector_name} {trading_pair} leverage to {self.config.leverage}x")
                         except Exception as e:
-                            self.logger().error(f"❌ Failed to set leverage for {connector_name} {trading_pair}: {e}")
+                            self.logger().error(f" Failed to set leverage for {connector_name} {trading_pair}: {e}")
                             self.alerter.warning(
                                 title="Leverage Setup Failed",
                                 message=f"Could not set {self.config.leverage}x leverage on {connector_name}",
@@ -309,7 +313,7 @@ class FundingRateArbitrage(StrategyV2Base):
                             # Continue with next trading pair
 
                 except Exception as e:
-                    self.logger().error(f"❌ Unexpected error applying initial settings for {connector_name}: {e}")
+                    self.logger().error(f" Unexpected error applying initial settings for {connector_name}: {e}")
                     self.alerter.warning(
                         title="Exchange Setup Error",
                         message=f"Failed to configure {connector_name}",
@@ -658,11 +662,11 @@ class FundingRateArbitrage(StrategyV2Base):
             # Check appropriate side of order book
             if is_buy:
                 # For buying, we need asks (sell orders)
-                total_volume = sum(Decimal(str(level.amount)) for level in order_book.ask_entries()[:20])
+                total_volume = sum(Decimal(str(level.amount)) for level in islice(order_book.ask_entries(), 20))
                 side_name = "asks"
             else:
                 # For selling, we need bids (buy orders)
-                total_volume = sum(Decimal(str(level.amount)) for level in order_book.bid_entries()[:20])
+                total_volume = sum(Decimal(str(level.amount)) for level in islice(order_book.bid_entries(), 20))
                 side_name = "bids"
 
             # Require minimum depth (e.g., 3x the required amount)
@@ -973,6 +977,11 @@ class FundingRateArbitrage(StrategyV2Base):
                     current_profitability = self.get_current_profitability_after_fees(
                         token, connector_1, connector_2, trade_side, position_size_quote
                     )
+                    if current_profitability == Decimal("-999"):
+                        self.logger().warning(
+                            f"Skipping {token}: profitability calculation failed for {connector_1}/{connector_2}"
+                        )
+                        continue
 
                     # SAFETY CHECK 2: Slippage protection
                     trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
@@ -1096,17 +1105,17 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 # BUG FIX #20: Enhanced logging for successful position opening
                 self.logger().info("=" * 60)
-                self.logger().info(f"✅ POSITION OPENED SUCCESSFULLY: {token}")
+                self.logger().info(f" POSITION OPENED SUCCESSFULLY: {token}")
                 self.logger().info("=" * 60)
-                self.logger().info(f"📊 Position Details:")
-                self.logger().info(f"   • Token: {token}")
-                self.logger().info(f"   • Exchange 1: {connector_1}")
-                self.logger().info(f"   • Exchange 2: {connector_2}")
-                self.logger().info(f"   • Side: {pending_info['side']}")
-                self.logger().info(f"   • Position Size: ${pending_info['position_size_quote']}")
-                self.logger().info(f"   • Validation: {hedge_msg}")
-                self.logger().info(f"   • Time to validate: {self.current_timestamp - pending_info.get('timestamp', self.current_timestamp):.2f}s")
-                self.logger().info(f"📈 Active Positions: {len(self.active_funding_arbitrages)} | Pending: {len(self.pending_funding_arbitrages) - 1}")
+                self.logger().info(f" Position Details:")
+                self.logger().info(f"   - Token: {token}")
+                self.logger().info(f"   - Exchange 1: {connector_1}")
+                self.logger().info(f"   - Exchange 2: {connector_2}")
+                self.logger().info(f"   - Side: {pending_info['side']}")
+                self.logger().info(f"   - Position Size: ${pending_info['position_size_quote']}")
+                self.logger().info(f"   - Validation: {hedge_msg}")
+                self.logger().info(f"   - Time to validate: {self.current_timestamp - pending_info.get('timestamp', self.current_timestamp):.2f}s")
+                self.logger().info(f" Active Positions: {len(self.active_funding_arbitrages)} | Pending: {len(self.pending_funding_arbitrages) - 1}")
                 self.logger().info("=" * 60)
 
                 # Send success alert
@@ -1338,20 +1347,20 @@ class FundingRateArbitrage(StrategyV2Base):
                 total_pnl_pct = (total_pnl / float(position_size)) * 100 if position_size > 0 else 0
 
                 self.logger().info("=" * 60)
-                self.logger().info(f"💰 TAKE PROFIT REACHED: {token}")
+                self.logger().info(f" TAKE PROFIT REACHED: {token}")
                 self.logger().info("=" * 60)
-                self.logger().info(f"📊 Position Details:")
-                self.logger().info(f"   • Token: {token}")
-                self.logger().info(f"   • Exchange 1: {connector_1}")
-                self.logger().info(f"   • Exchange 2: {connector_2}")
-                self.logger().info(f"   • Side: {funding_arbitrage_info['side']}")
-                self.logger().info(f"   • Position Size: ${position_size}")
-                self.logger().info(f"💵 PnL Summary:")
-                self.logger().info(f"   • Trading PnL: ${executors_pnl:.2f}")
-                self.logger().info(f"   • Funding Payments: ${funding_payments_pnl:.2f}")
-                self.logger().info(f"   • Total PnL: ${total_pnl:.2f} ({total_pnl_pct:+.2f}%)")
-                self.logger().info(f"   • Funding Payments Collected: {len(funding_arbitrage_info['funding_payments'])}")
-                self.logger().info(f"📈 Active Positions: {len(self.active_funding_arbitrages) - 1}")
+                self.logger().info(f" Position Details:")
+                self.logger().info(f"   - Token: {token}")
+                self.logger().info(f"   - Exchange 1: {connector_1}")
+                self.logger().info(f"   - Exchange 2: {connector_2}")
+                self.logger().info(f"   - Side: {funding_arbitrage_info['side']}")
+                self.logger().info(f"   - Position Size: ${position_size}")
+                self.logger().info(f" PnL Summary:")
+                self.logger().info(f"   - Trading PnL: ${executors_pnl:.2f}")
+                self.logger().info(f"   - Funding Payments: ${funding_payments_pnl:.2f}")
+                self.logger().info(f"   - Total PnL: ${total_pnl:.2f} ({total_pnl_pct:+.2f}%)")
+                self.logger().info(f"   - Funding Payments Collected: {len(funding_arbitrage_info['funding_payments'])}")
+                self.logger().info(f" Active Positions: {len(self.active_funding_arbitrages) - 1}")
                 self.logger().info("=" * 60)
 
                 # Send alert for position closed with profit
@@ -1373,23 +1382,23 @@ class FundingRateArbitrage(StrategyV2Base):
                 total_pnl_pct = (total_pnl / float(position_size)) * 100 if position_size > 0 else 0
 
                 self.logger().info("=" * 60)
-                self.logger().info(f"🛑 STOP LOSS TRIGGERED: {token}")
+                self.logger().info(f" STOP LOSS TRIGGERED: {token}")
                 self.logger().info("=" * 60)
-                self.logger().info(f"📊 Position Details:")
-                self.logger().info(f"   • Token: {token}")
-                self.logger().info(f"   • Exchange 1: {connector_1}")
-                self.logger().info(f"   • Exchange 2: {connector_2}")
-                self.logger().info(f"   • Side: {funding_arbitrage_info['side']}")
-                self.logger().info(f"   • Position Size: ${position_size}")
-                self.logger().info(f"📉 Reason:")
-                self.logger().info(f"   • Funding Rate Diff: {funding_rate_diff:.6f}")
-                self.logger().info(f"   • Stop Loss Threshold: {self.config.funding_rate_diff_stop_loss:.6f}")
-                self.logger().info(f"💵 PnL Summary:")
-                self.logger().info(f"   • Trading PnL: ${executors_pnl:.2f}")
-                self.logger().info(f"   • Funding Payments: ${funding_payments_pnl:.2f}")
-                self.logger().info(f"   • Total PnL: ${total_pnl:.2f} ({total_pnl_pct:+.2f}%)")
-                self.logger().info(f"   • Funding Payments Collected: {len(funding_arbitrage_info['funding_payments'])}")
-                self.logger().info(f"📈 Active Positions: {len(self.active_funding_arbitrages) - 1}")
+                self.logger().info(f" Position Details:")
+                self.logger().info(f"   - Token: {token}")
+                self.logger().info(f"   - Exchange 1: {connector_1}")
+                self.logger().info(f"   - Exchange 2: {connector_2}")
+                self.logger().info(f"   - Side: {funding_arbitrage_info['side']}")
+                self.logger().info(f"   - Position Size: ${position_size}")
+                self.logger().info(f" Reason:")
+                self.logger().info(f"   - Funding Rate Diff: {funding_rate_diff:.6f}")
+                self.logger().info(f"   - Stop Loss Threshold: {self.config.funding_rate_diff_stop_loss:.6f}")
+                self.logger().info(f" PnL Summary:")
+                self.logger().info(f"   - Trading PnL: ${executors_pnl:.2f}")
+                self.logger().info(f"   - Funding Payments: ${funding_payments_pnl:.2f}")
+                self.logger().info(f"   - Total PnL: ${total_pnl:.2f} ({total_pnl_pct:+.2f}%)")
+                self.logger().info(f"   - Funding Payments Collected: {len(funding_arbitrage_info['funding_payments'])}")
+                self.logger().info(f" Active Positions: {len(self.active_funding_arbitrages) - 1}")
                 self.logger().info("=" * 60)
 
                 # Send alert for position closed with stop loss
@@ -1456,24 +1465,24 @@ class FundingRateArbitrage(StrategyV2Base):
             total_pnl += executors_pnl + funding_payments_pnl
 
         self.logger().info("=" * 80)
-        self.logger().info("📊 PERIODIC STATISTICS REPORT")
+        self.logger().info(" PERIODIC STATISTICS REPORT")
         self.logger().info("=" * 80)
-        self.logger().info(f"⏰ Uptime: {time_since_last_log / 60:.1f} minutes since last report")
-        self.logger().info(f"📈 Active Positions: {total_positions}")
-        self.logger().info(f"⏳ Pending Positions: {pending_positions}")
-        self.logger().info(f"💰 Total Unrealized PnL: ${float(total_pnl):.2f}")
-        self.logger().info(f"📬 Total Funding Payments Collected: {total_funding_payments}")
+        self.logger().info(f" Uptime: {time_since_last_log / 60:.1f} minutes since last report")
+        self.logger().info(f" Active Positions: {total_positions}")
+        self.logger().info(f" Pending Positions: {pending_positions}")
+        self.logger().info(f" Total Unrealized PnL: ${float(total_pnl):.2f}")
+        self.logger().info(f" Total Funding Payments Collected: {total_funding_payments}")
         if total_positions > 0:
             avg_funding_per_position = total_funding_payments / total_positions
             avg_pnl_per_position = float(total_pnl) / total_positions
-            self.logger().info(f"📊 Average per Position:")
-            self.logger().info(f"   • Funding Payments: {avg_funding_per_position:.1f}")
-            self.logger().info(f"   • Unrealized PnL: ${avg_pnl_per_position:.2f}")
-        self.logger().info(f"🔧 Rate Limiter Stats:")
+            self.logger().info(f" Average per Position:")
+            self.logger().info(f"   - Funding Payments: {avg_funding_per_position:.1f}")
+            self.logger().info(f"   - Unrealized PnL: ${avg_pnl_per_position:.2f}")
+        self.logger().info(f" Rate Limiter Stats:")
         for exchange_stats in self.rate_limiter.get_all_stats():
             if exchange_stats['requests_last_second'] > 0:
-                self.logger().info(f"   • {exchange_stats['exchange']}: {exchange_stats['requests_last_second']}/{exchange_stats['limit']} req/s ({exchange_stats['utilization']:.0f}%)")
-        self.logger().info(f"⚠️  Error Count (since last reset): {self.error_count}")
+                self.logger().info(f"   - {exchange_stats['exchange']}: {exchange_stats['requests_last_second']}/{exchange_stats['limit']} req/s ({exchange_stats['utilization']:.0f}%)")
+        self.logger().info(f"  Error Count (since last reset): {self.error_count}")
         self.logger().info("=" * 80)
 
     def did_complete_funding_payment(self, funding_payment_completed_event: FundingPaymentCompletedEvent):

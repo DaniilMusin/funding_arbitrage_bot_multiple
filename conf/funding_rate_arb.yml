@@ -12,7 +12,7 @@ max_position_imbalance_pct: 0.10       # 10% max notional imbalance before emerg
 
 connectors:
   - okx_perpetual
-  - hyperliquid_perpetual
+  - bybit_perpetual
 tokens:
   # ============================================================================
   # TOP TIER - HIGHEST LIQUIDITY (Recommended for beginners)

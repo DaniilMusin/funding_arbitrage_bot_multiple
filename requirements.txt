@@ -24,13 +24,14 @@ ujson>=5.7.0
 # Cryptography and blockchain
 cryptography>=41.0.2
 eth-account>=0.13.0
-bip-utils
-safe-pysha3
+# Optional crypto libs (dydx key derivation). Skip on Windows to avoid missing wheels.
+bip-utils; platform_system != "Windows"
+safe-pysha3; platform_system != "Windows"
 web3
 xrpl-py>=4.1.0
 
 # Exchange connectors (injective)
-injective-py
+injective-py; platform_system != "Windows"
 
 # Configuration and messaging
 commlib-py>=0.11
@@ -45,7 +46,8 @@ scalecodec
 # Data analysis and numerical computing
 numpy>=1.25.0,<2
 pandas>=2.0.3
-pandas-ta>=0.3.14b
+# pandas-ta currently publishes wheels only for Python >= 3.12; skip on 3.11
+pandas-ta==0.4.71b0; python_version >= "3.12"
 scipy>=1.11.1
 
 # Database

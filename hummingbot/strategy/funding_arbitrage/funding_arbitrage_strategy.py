@@ -4,6 +4,7 @@ Integrates all components: edge calculation, scheduling, risk management, reconc
 """
 
 import asyncio
+import inspect
 import logging
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Set
@@ -12,7 +13,7 @@ import time
 
 from hummingbot.strategy.strategy_py_base import StrategyPyBase
 from hummingbot.connector.connector_base import ConnectorBase
-from hummingbot.core.data_type.common import OrderType, PositionAction, TradeType
+from hummingbot.core.data_type.common import OrderType, PositionAction, TradeType, PriceType
 from hummingbot.core.data_type.funding_info import FundingInfo
 from hummingbot.core.event.events import BuyOrderCompletedEvent, SellOrderCompletedEvent
 from hummingbot.logger import HummingbotLogger
@@ -20,7 +21,13 @@ from hummingbot.logger import HummingbotLogger
 from .edge_decomposition import EdgeCalculator, EdgeTracker, EdgeDecomposition
 from .funding_scheduler import FundingScheduler, SettlementStatus
 from .risk_management import RiskManager, PositionInfo, LiquidityMetrics
-from .reconciliation import ReconciliationEngine, PositionTracker, ReconciliationScheduler
+from .reconciliation import (
+    ReconciliationEngine,
+    PositionTracker,
+    ReconciliationScheduler,
+    PositionSnapshot,
+    BalanceSnapshot,
+)
 from .margin_monitoring import MarginMonitor, MarginInfo, PositionMarginInfo, MarginAction
 from .metrics_system import MetricsCollector
 
@@ -36,7 +43,7 @@ class FundingArbitrageConfig:
     min_position_hold_time_minutes: int = 10
 
     # Position sizing
-    order_amount: Decimal = Decimal("1.0")  # Order amount per position
+    order_amount: Decimal = Decimal("1.0")  # Order amount per position in quote currency
 
     # Auto trading pair selection
     auto_select_pairs: bool = True  # Automatically select most profitable pairs
@@ -117,7 +124,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
         )
         self.reconciliation_scheduler = ReconciliationScheduler(
             self.reconciliation_engine,
-            config.reconciliation_interval_seconds
+            config.reconciliation_interval_seconds,
+            data_provider=self._collect_reconciliation_data,
         )
 
         # Margin monitoring
@@ -142,6 +150,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
         self.funding_rates: Dict[str, Dict[str, FundingInfo]] = {}  # exchange -> pair -> FundingInfo
         self.last_funding_check = 0
         self.emergency_stop_active = False
+        self.last_margin_update = 0
 
         # Auto pair selection
         self.available_pairs: Set[str] = set()  # All available pairs across exchanges
@@ -151,6 +160,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
 
         # Background tasks tracking (CRITICAL: prevent silent failures)
         self._background_tasks: Set[asyncio.Task] = set()
+        self._tick_task: Optional[asyncio.Task] = None
 
         # Performance tracking
         self.total_funding_collected = Decimal("0")
@@ -236,8 +246,22 @@ class FundingArbitrageStrategy(StrategyPyBase):
         trading_pair = position_data['trading_pair']
         long_exchange = position_data['long_exchange']
         short_exchange = position_data['short_exchange']
-        long_amount = position_data.get('long_amount', position_data['notional_amount'])
-        short_amount = position_data.get('short_amount', position_data['notional_amount'])
+        long_amount_base = position_data.get('long_amount_base', position_data.get('long_amount'))
+        short_amount_base = position_data.get('short_amount_base', position_data.get('short_amount'))
+
+        if long_amount_base is None or short_amount_base is None:
+            self.logger().error(f"Missing position amounts for {position_id}, cannot reduce leverage")
+            return
+
+        long_notional = position_data.get('long_notional')
+        short_notional = position_data.get('short_notional')
+
+        if long_notional is None:
+            entry_price_long = position_data.get('entry_price_long')
+            long_notional = long_amount_base * entry_price_long if entry_price_long else long_amount_base
+        if short_notional is None:
+            entry_price_short = position_data.get('entry_price_short')
+            short_notional = short_amount_base * entry_price_short if entry_price_short else short_amount_base
 
         # Calculate current leverage
         current_edge = position_data.get('edge_decomposition')
@@ -272,7 +296,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             if needs_long_reduction:
                 # Calculate how much to reduce long position
                 reduction_ratio = (current_leverage_long - new_leverage) / current_leverage_long
-                reduce_amount_long = long_amount * reduction_ratio
+                reduce_amount_long = long_amount_base * reduction_ratio
 
                 self.logger().info(
                     f"Reducing long position on {long_exchange} by {reduce_amount_long} "
@@ -290,12 +314,13 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 )
 
                 # Update tracked amount
-                position_data['long_amount'] = long_amount - reduce_amount_long
+                position_data['long_amount_base'] = long_amount_base - reduce_amount_long
+                position_data['long_notional'] = long_notional * (Decimal('1') - reduction_ratio)
 
             if needs_short_reduction:
                 # Calculate how much to reduce short position
                 reduction_ratio = (current_leverage_short - new_leverage) / current_leverage_short
-                reduce_amount_short = short_amount * reduction_ratio
+                reduce_amount_short = short_amount_base * reduction_ratio
 
                 self.logger().info(
                     f"Reducing short position on {short_exchange} by {reduce_amount_short} "
@@ -313,7 +338,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 )
 
                 # Update tracked amount
-                position_data['short_amount'] = short_amount - reduce_amount_short
+                position_data['short_amount_base'] = short_amount_base - reduce_amount_short
+                position_data['short_notional'] = short_notional * (Decimal('1') - reduction_ratio)
 
             # Execute reductions in parallel
             if close_tasks:
@@ -337,11 +363,11 @@ class FundingArbitrageStrategy(StrategyPyBase):
             # Update risk manager with new position sizes
             if needs_long_reduction:
                 self.risk_manager.update_position_notional(
-                    long_exchange, trading_pair, position_data['long_amount']
+                    long_exchange, trading_pair, position_data['long_notional']
                 )
             if needs_short_reduction:
                 self.risk_manager.update_position_notional(
-                    short_exchange, trading_pair, position_data['short_amount']
+                    short_exchange, trading_pair, position_data['short_notional']
                 )
 
             self.logger().info(f"Leverage reduction completed for {position_id}")
@@ -357,7 +383,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
         """Close all active positions on a specific exchange."""
         positions_to_close = [
             pos_id for pos_id, pos_data in self.active_positions.items()
-            if pos_data.get('exchange') == exchange_name
+            if exchange_name in (pos_data.get('long_exchange'), pos_data.get('short_exchange'))
         ]
 
         for position_id in positions_to_close:
@@ -370,9 +396,10 @@ class FundingArbitrageStrategy(StrategyPyBase):
         Args:
             timestamp: Current timestamp from hummingbot clock
         """
-        # Create task for async on_tick
-        # This is the standard pattern for async strategies in hummingbot
-        asyncio.create_task(self.on_tick())
+        if self._tick_task is None or self._tick_task.done():
+            self._tick_task = asyncio.create_task(self.on_tick())
+        else:
+            self.logger().debug("Skipping tick because previous tick is still running")
 
     async def on_tick(self):
         """Main strategy tick - called periodically."""
@@ -394,6 +421,11 @@ class FundingArbitrageStrategy(StrategyPyBase):
             if not self.emergency_stop_active:
                 await self._check_arbitrage_opportunities()
 
+            # Update margin monitoring snapshots
+            if current_time - self.last_margin_update >= self.config.margin_check_interval_seconds:
+                await self._update_margin_monitoring()
+                self.last_margin_update = current_time
+
             # Monitor existing positions
             await self._monitor_existing_positions()
 
@@ -405,7 +437,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
         Scan all available pairs across exchanges and select the most profitable ones.
         Updates self.selected_pairs with top pairs by funding rate differential.
         """
-        self.logger().info("🔍 Scanning trading pairs for best funding rate opportunities...")
+        self.logger().info(" Scanning trading pairs for best funding rate opportunities...")
 
         try:
             # Collect all available pairs from all exchanges
@@ -427,19 +459,16 @@ class FundingArbitrageStrategy(StrategyPyBase):
                         all_pairs.add(pair)
 
                         # Get funding info
-                        if hasattr(connector, 'get_funding_info'):
-                            try:
-                                funding_info = await connector.get_funding_info(pair)
-                                if funding_info:
-                                    if pair not in pair_data:
-                                        pair_data[pair] = {}
-                                    pair_data[pair][exchange_name] = {
-                                        'funding_info': funding_info,
-                                        'rate': Decimal(str(funding_info.rate)) if hasattr(funding_info, 'rate') else Decimal('0')
-                                    }
-                            except Exception as e:
-                                # Skip pairs that fail to fetch
-                                pass
+                        funding_info = await self._get_funding_info(connector, pair)
+                        if funding_info:
+                            if pair not in pair_data:
+                                pair_data[pair] = {}
+                            volume_24h = await self._get_24h_volume(connector, pair)
+                            pair_data[pair][exchange_name] = {
+                                'funding_info': funding_info,
+                                'rate': Decimal(str(funding_info.rate)) if hasattr(funding_info, 'rate') else Decimal('0'),
+                                'volume_24h': volume_24h,
+                            }
 
                 except Exception as e:
                     self.logger().warning(f"Failed to scan pairs on {exchange_name}: {e}")
@@ -460,6 +489,12 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 min_rate = min(rates)
                 rate_diff = abs(max_rate - min_rate)
 
+                volumes = [data.get('volume_24h') for data in exchanges_data.values() if data.get('volume_24h') is not None]
+                if volumes:
+                    min_volume = min(volumes)
+                    if min_volume < self.config.min_pair_volume_24h:
+                        continue
+
                 # Check if meets minimum criteria
                 if rate_diff >= self.config.min_funding_rate_diff:
                     # Profitability score = rate difference (simple for now)
@@ -478,7 +513,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
 
                 if new_selected != self.selected_pairs:
                     self.logger().info(
-                        f"📊 Updated selected pairs:\n" +
+                        f" Updated selected pairs:\n" +
                         "\n".join([
                             f"  {i+1}. {pair}: {profitability_scores[pair]:.4%} rate differential"
                             for i, pair in enumerate(new_selected)
@@ -501,12 +536,11 @@ class FundingArbitrageStrategy(StrategyPyBase):
         for exchange_name, connector in self.exchanges.items():
             try:
                 for trading_pair in self.trading_pairs:
-                    if hasattr(connector, 'get_funding_info'):
-                        funding_info = await connector.get_funding_info(trading_pair)
-                        if funding_info:
-                            if exchange_name not in self.funding_rates:
-                                self.funding_rates[exchange_name] = {}
-                            self.funding_rates[exchange_name][trading_pair] = funding_info
+                    funding_info = await self._get_funding_info(connector, trading_pair)
+                    if funding_info:
+                        if exchange_name not in self.funding_rates:
+                            self.funding_rates[exchange_name] = {}
+                        self.funding_rates[exchange_name][trading_pair] = funding_info
 
             except Exception as e:
                 self.logger().warning(f"Failed to update funding rates for {exchange_name}: {e}")
@@ -780,23 +814,25 @@ class FundingArbitrageStrategy(StrategyPyBase):
         # Get REAL fee configuration from connectors
         # CRITICAL FIX: Use actual exchange fees instead of hardcoded values
         fees_config = {}
-        for exchange_name in [long_exchange, short_exchange]:
+        for exchange_name, order_side in [
+            (long_exchange, TradeType.BUY),
+            (short_exchange, TradeType.SELL),
+        ]:
             connector = self.exchanges.get(exchange_name)
             if connector:
                 # Get real fees from connector
                 maker_fee = Decimal("0.0002")  # Default fallback
                 taker_fee = Decimal("0.0005")  # Default fallback
 
-                # Try to get actual fees from connector
-                if hasattr(connector, 'get_fee'):
-                    # Some connectors have get_fee method
-                    try:
-                        fee_info = connector.get_fee(trading_pair)
-                        if fee_info:
-                            maker_fee = Decimal(str(fee_info.maker_percent_fee_decimal)) if hasattr(fee_info, 'maker_percent_fee_decimal') else maker_fee
-                            taker_fee = Decimal(str(fee_info.taker_percent_fee_decimal)) if hasattr(fee_info, 'taker_percent_fee_decimal') else taker_fee
-                    except Exception:
-                        pass
+                fee_rates = self._get_fee_rates(
+                    connector=connector,
+                    trading_pair=trading_pair,
+                    notional_amount=notional_amount,
+                    order_side=order_side,
+                    fallback_maker=maker_fee,
+                    fallback_taker=taker_fee,
+                )
+                maker_fee, taker_fee = fee_rates
 
                 # Alternative: Check for trading_fees attribute
                 if hasattr(connector, 'trading_fees'):
@@ -833,7 +869,9 @@ class FundingArbitrageStrategy(StrategyPyBase):
             notional_amount=notional_amount,
             fees_config=fees_config,
             borrow_rates=borrow_rates,
-            slippage_estimates=slippage_estimates
+            slippage_estimates=slippage_estimates,
+            funding_period_hours_long=self._get_funding_period_hours(long_exchange),
+            funding_period_hours_short=self._get_funding_period_hours(short_exchange),
         )
 
         # Track the calculation
@@ -1002,6 +1040,578 @@ class FundingArbitrageStrategy(StrategyPyBase):
             self.logger().debug(traceback.format_exc())
             return None
 
+    async def _get_24h_volume(self, connector: ConnectorBase, trading_pair: str) -> Optional[Decimal]:
+        """Best-effort 24h quote volume fetch for pair selection."""
+        name = getattr(connector, 'name', str(connector))
+        try:
+            volume = None
+            if hasattr(connector, 'get_24h_volume'):
+                volume = connector.get_24h_volume(trading_pair)
+            elif hasattr(connector, 'get_trading_pair_24h_volume'):
+                volume = connector.get_trading_pair_24h_volume(trading_pair)
+            elif hasattr(connector, 'get_ticker'):
+                ticker = connector.get_ticker(trading_pair)
+                if asyncio.iscoroutine(ticker):
+                    ticker = await ticker
+                if isinstance(ticker, dict):
+                    for key in ('quote_volume', 'quoteVolume', 'volume', 'base_volume', 'baseVolume'):
+                        if key in ticker and ticker[key] is not None:
+                            volume = ticker[key]
+                            break
+                else:
+                    for key in ('quote_volume', 'quoteVolume', 'volume', 'base_volume', 'baseVolume'):
+                        if hasattr(ticker, key):
+                            volume = getattr(ticker, key)
+                            break
+
+            if volume is None:
+                return None
+
+            volume_dec = Decimal(str(volume))
+            if volume_dec <= 0:
+                return None
+
+            return volume_dec
+
+        except Exception as e:
+            self.logger().debug(f"Failed to get 24h volume for {name}/{trading_pair}: {e}")
+            return None
+
+    def _get_mid_price(self, connector: ConnectorBase, trading_pair: str) -> Optional[Decimal]:
+        """Get mid price with fallbacks for different connector implementations."""
+        name = getattr(connector, 'name', str(connector))
+        try:
+            price = None
+            if hasattr(connector, 'get_mid_price'):
+                price = connector.get_mid_price(trading_pair)
+            elif hasattr(connector, 'get_price_by_type'):
+                price = connector.get_price_by_type(trading_pair, PriceType.MidPrice)
+            else:
+                order_book = None
+                if hasattr(connector, 'get_order_book'):
+                    order_book = connector.get_order_book(trading_pair)
+                elif hasattr(connector, 'order_book_tracker') and hasattr(connector.order_book_tracker, 'get_order_book'):
+                    order_book = connector.order_book_tracker.get_order_book(trading_pair)
+                if order_book:
+                    try:
+                        best_bid = order_book.get_price(False)
+                        best_ask = order_book.get_price(True)
+                        if best_bid is not None and best_ask is not None:
+                            price = (Decimal(str(best_bid)) + Decimal(str(best_ask))) / Decimal('2')
+                    except Exception:
+                        price = None
+
+            if price is None:
+                self.logger().warning(f"Mid price unavailable for {name}/{trading_pair}")
+                return None
+
+            price_dec = Decimal(str(price))
+            if price_dec <= 0:
+                self.logger().warning(f"Invalid mid price for {name}/{trading_pair}: {price_dec}")
+                return None
+
+            return price_dec
+
+        except Exception as e:
+            self.logger().warning(f"Failed to get mid price for {name}/{trading_pair}: {e}")
+            return None
+
+    async def _get_funding_info(self, connector: ConnectorBase, trading_pair: str) -> Optional[FundingInfo]:
+        """Fetch funding info from connector with sync/async compatibility."""
+        if not hasattr(connector, 'get_funding_info'):
+            return None
+        name = getattr(connector, 'name', str(connector))
+        try:
+            funding_info = connector.get_funding_info(trading_pair)
+            if inspect.isawaitable(funding_info):
+                funding_info = await funding_info
+            return funding_info
+        except Exception as e:
+            self.logger().warning(f"Failed to fetch funding info for {name}/{trading_pair}: {e}")
+            return None
+
+    def _split_trading_pair(self, connector: ConnectorBase, trading_pair: str) -> Tuple[str, str]:
+        """Split trading pair into base and quote with connector fallback."""
+        if hasattr(connector, 'split_trading_pair'):
+            try:
+                return connector.split_trading_pair(trading_pair)
+            except Exception:
+                pass
+
+        if '-' in trading_pair:
+            return trading_pair.split('-', 1)
+
+        if trading_pair.endswith(('USDT', 'USDC', 'BUSD', 'TUSD')):
+            return trading_pair[:-4], trading_pair[-4:]
+        if trading_pair.endswith(('USD', 'EUR', 'GBP', 'JPY', 'BTC', 'ETH', 'BNB', 'DAI')):
+            return trading_pair[:-3], trading_pair[-3:]
+
+        return trading_pair[:-3], trading_pair[-3:]
+
+    def _get_fee_percent(self,
+                         connector: ConnectorBase,
+                         base: str,
+                         quote: str,
+                         order_type: OrderType,
+                         order_side: TradeType,
+                         amount: Decimal,
+                         price: Decimal,
+                         is_maker: bool) -> Optional[Decimal]:
+        """Return fee percent for a specific order shape."""
+        fee_info = None
+        try:
+            fee_info = connector.get_fee(
+                base, quote, order_type, order_side, PositionAction.OPEN, amount, price, is_maker
+            )
+        except TypeError:
+            try:
+                fee_info = connector.get_fee(
+                    base, quote, order_type, order_side, amount, price, is_maker
+                )
+            except TypeError:
+                try:
+                    fee_info = connector.get_fee(base, quote, order_type, order_side, amount, price)
+                except Exception:
+                    return None
+        except Exception:
+            return None
+
+        if fee_info is None:
+            return None
+
+        if hasattr(fee_info, 'percent'):
+            return Decimal(str(fee_info.percent))
+
+        if hasattr(fee_info, 'maker_percent_fee_decimal') or hasattr(fee_info, 'taker_percent_fee_decimal'):
+            if is_maker and hasattr(fee_info, 'maker_percent_fee_decimal'):
+                return Decimal(str(fee_info.maker_percent_fee_decimal))
+            if not is_maker and hasattr(fee_info, 'taker_percent_fee_decimal'):
+                return Decimal(str(fee_info.taker_percent_fee_decimal))
+
+        if isinstance(fee_info, dict):
+            key = 'maker' if is_maker else 'taker'
+            if key in fee_info:
+                return Decimal(str(fee_info[key]))
+
+        return None
+
+    def _get_fee_rates(self,
+                       connector: ConnectorBase,
+                       trading_pair: str,
+                       notional_amount: Decimal,
+                       order_side: TradeType,
+                       fallback_maker: Decimal,
+                       fallback_taker: Decimal) -> Tuple[Decimal, Decimal]:
+        """Get maker/taker fee rates with fallback to defaults."""
+        price = self._get_mid_price(connector, trading_pair)
+        if price is None or price <= 0:
+            return fallback_maker, fallback_taker
+
+        base, quote = self._split_trading_pair(connector, trading_pair)
+        base_amount = notional_amount / price
+
+        maker_fee = self._get_fee_percent(
+            connector, base, quote, OrderType.LIMIT, order_side, base_amount, price, True
+        )
+        taker_fee = self._get_fee_percent(
+            connector, base, quote, OrderType.MARKET, order_side, base_amount, price, False
+        )
+
+        return (
+            maker_fee if maker_fee is not None else fallback_maker,
+            taker_fee if taker_fee is not None else fallback_taker,
+        )
+
+    def _get_funding_period_hours(self, exchange_name: str) -> Decimal:
+        """Infer funding period length from scheduler settings."""
+        schedule = self.funding_scheduler.exchange_schedules.get(exchange_name.lower())
+        if not schedule or not schedule.settlement_times:
+            return Decimal("8")
+
+        periods = len(schedule.settlement_times)
+        if periods <= 0:
+            return Decimal("8")
+
+        return Decimal("24") / Decimal(str(periods))
+
+    def _get_connector_positions(self, connector: ConnectorBase) -> Optional[List]:
+        """Best-effort position fetch for reconciliation/margin monitoring."""
+        try:
+            if hasattr(connector, 'account_positions'):
+                return list(connector.account_positions.values())
+            if hasattr(connector, 'get_position'):
+                positions = []
+                for trading_pair in self.trading_pairs:
+                    try:
+                        position = connector.get_position(trading_pair)
+                        if position is not None:
+                            positions.append(position)
+                    except Exception:
+                        continue
+                return positions
+        except Exception:
+            return None
+        return None
+
+    def _get_connector_balances(self, connector: ConnectorBase) -> Optional[Dict[str, Decimal]]:
+        """Best-effort balances fetch for reconciliation."""
+        if hasattr(connector, 'get_all_balances'):
+            try:
+                return connector.get_all_balances()
+            except Exception:
+                return None
+        return None
+
+    def _get_available_balance(self, connector: ConnectorBase, asset: str) -> Decimal:
+        """Best-effort available balance fetch."""
+        if hasattr(connector, 'get_available_balance'):
+            try:
+                return Decimal(str(connector.get_available_balance(asset)))
+            except Exception:
+                return Decimal("0")
+        if hasattr(connector, 'get_balance'):
+            try:
+                return Decimal(str(connector.get_balance(asset)))
+            except Exception:
+                return Decimal("0")
+        return Decimal("0")
+
+    def _get_total_balance(self, connector: ConnectorBase, asset: str) -> Decimal:
+        """Best-effort total balance fetch."""
+        if hasattr(connector, 'get_balance'):
+            try:
+                return Decimal(str(connector.get_balance(asset)))
+            except Exception:
+                return Decimal("0")
+
+        balances = self._get_connector_balances(connector)
+        if balances and asset in balances:
+            try:
+                return Decimal(str(balances[asset]))
+            except Exception:
+                return Decimal("0")
+
+        return Decimal("0")
+
+    def _build_position_snapshot(self,
+                                 exchange: str,
+                                 trading_pair: str,
+                                 side: str,
+                                 size: Decimal,
+                                 entry_price: Decimal,
+                                 leverage: Decimal,
+                                 unrealized_pnl: Decimal,
+                                 mark_price: Optional[Decimal]) -> PositionSnapshot:
+        """Create a reconciliation snapshot from position values."""
+        notional_value = abs(size) * entry_price
+        margin_used = notional_value / leverage if leverage > 0 else notional_value
+        if mark_price is None:
+            mark_price = entry_price
+        return PositionSnapshot(
+            exchange=exchange,
+            trading_pair=trading_pair,
+            side=side,
+            size=size,
+            notional_value=notional_value,
+            entry_price=entry_price,
+            mark_price=mark_price,
+            unrealized_pnl=unrealized_pnl,
+            leverage=leverage,
+            margin_used=margin_used,
+            timestamp=time.time(),
+        )
+
+    def _sync_expected_positions(self, exchanges: Set[str]):
+        """Refresh expected positions based on active positions."""
+        self.position_tracker.expected_positions = {}
+        self.position_tracker.expected_balances = {}
+
+        for position_data in self.active_positions.values():
+            trading_pair = position_data.get('trading_pair')
+            edge = position_data.get('edge_decomposition')
+            if not trading_pair:
+                continue
+
+            long_exchange = position_data.get('long_exchange')
+            if long_exchange in exchanges:
+                long_amount = position_data.get('long_amount_base')
+                long_entry = position_data.get('entry_price_long')
+                long_notional = position_data.get('long_notional')
+                if long_amount is not None and long_entry is not None:
+                    leverage_long = getattr(edge, 'leverage_long', Decimal("1")) if edge else Decimal("1")
+                    if leverage_long <= 0:
+                        leverage_long = Decimal("1")
+                    if long_notional is None:
+                        long_notional = abs(long_amount) * long_entry
+                    long_mark = self._get_mid_price(self.exchanges[long_exchange], trading_pair)
+                    snapshot = self._build_position_snapshot(
+                        exchange=long_exchange,
+                        trading_pair=trading_pair,
+                        side='long',
+                        size=Decimal(str(long_amount)),
+                        entry_price=Decimal(str(long_entry)),
+                        leverage=Decimal(str(leverage_long)),
+                        unrealized_pnl=Decimal("0"),
+                        mark_price=long_mark,
+                    )
+                    self.position_tracker.add_expected_position(snapshot)
+
+            short_exchange = position_data.get('short_exchange')
+            if short_exchange in exchanges:
+                short_amount = position_data.get('short_amount_base')
+                short_entry = position_data.get('entry_price_short')
+                short_notional = position_data.get('short_notional')
+                if short_amount is not None and short_entry is not None:
+                    leverage_short = getattr(edge, 'leverage_short', Decimal("1")) if edge else Decimal("1")
+                    if leverage_short <= 0:
+                        leverage_short = Decimal("1")
+                    if short_notional is None:
+                        short_notional = abs(short_amount) * short_entry
+                    short_mark = self._get_mid_price(self.exchanges[short_exchange], trading_pair)
+                    snapshot = self._build_position_snapshot(
+                        exchange=short_exchange,
+                        trading_pair=trading_pair,
+                        side='short',
+                        size=Decimal(str(short_amount)),
+                        entry_price=Decimal(str(short_entry)),
+                        leverage=Decimal(str(leverage_short)),
+                        unrealized_pnl=Decimal("0"),
+                        mark_price=short_mark,
+                    )
+                    self.position_tracker.add_expected_position(snapshot)
+
+    async def _collect_reconciliation_data(self) -> Optional[Tuple[
+        Dict[str, PositionSnapshot],
+        Dict[str, BalanceSnapshot],
+        Optional[Dict[str, Dict]],
+    ]]:
+        """Collect actual positions/balances for reconciliation."""
+        actual_positions: Dict[str, PositionSnapshot] = {}
+        actual_balances: Dict[str, BalanceSnapshot] = {}
+        actual_orders: Dict[str, Dict] = {}
+        available_exchanges: Set[str] = set()
+
+        for exchange_name, connector in self.exchanges.items():
+            positions = self._get_connector_positions(connector)
+            balances = self._get_connector_balances(connector)
+
+            if positions is None and balances is None:
+                continue
+
+            if positions is not None:
+                for position in positions:
+                    try:
+                        trading_pair = position.trading_pair
+                        side = position.position_side.name.lower() if position.position_side else 'unknown'
+                        amount = Decimal(str(position.amount))
+                        entry_price = Decimal(str(position.entry_price))
+                        leverage = Decimal(str(position.leverage)) if position.leverage else Decimal("1")
+                        unrealized_pnl = Decimal(str(position.unrealized_pnl)) if position.unrealized_pnl is not None else Decimal("0")
+                        mark_price = self._get_mid_price(connector, trading_pair)
+                        snapshot = self._build_position_snapshot(
+                            exchange=exchange_name,
+                            trading_pair=trading_pair,
+                            side=side,
+                            size=amount,
+                            entry_price=entry_price,
+                            leverage=leverage if leverage > 0 else Decimal("1"),
+                            unrealized_pnl=unrealized_pnl,
+                            mark_price=mark_price,
+                        )
+                        key = f"{exchange_name}_{trading_pair}_{side}"
+                        actual_positions[key] = snapshot
+                        available_exchanges.add(exchange_name)
+                    except Exception:
+                        continue
+
+            if balances is not None:
+                for asset, total in balances.items():
+                    try:
+                        total_dec = Decimal(str(total))
+                    except Exception:
+                        continue
+                    available = self._get_available_balance(connector, asset)
+                    locked = max(total_dec - available, Decimal("0"))
+                    key = f"{exchange_name}_{asset}"
+                    actual_balances[key] = BalanceSnapshot(
+                        exchange=exchange_name,
+                        asset=asset,
+                        total_balance=total_dec,
+                        available_balance=available,
+                        locked_balance=locked,
+                        timestamp=time.time(),
+                    )
+                    available_exchanges.add(exchange_name)
+
+            if hasattr(connector, 'in_flight_orders'):
+                try:
+                    for order_id, order in connector.in_flight_orders.items():
+                        actual_orders[str(order_id)] = {
+                            'exchange': exchange_name,
+                            'order': order,
+                        }
+                except Exception:
+                    pass
+
+        if not available_exchanges:
+            return None
+
+        self._sync_expected_positions(available_exchanges)
+
+        return actual_positions, actual_balances, actual_orders or None
+
+    def _get_collateral_token(self, connector: ConnectorBase, trading_pair: str) -> Optional[str]:
+        """Derive collateral token from connector or trading pair."""
+        if hasattr(connector, 'get_buy_collateral_token'):
+            try:
+                return connector.get_buy_collateral_token(trading_pair)
+            except Exception:
+                pass
+        if hasattr(connector, 'get_sell_collateral_token'):
+            try:
+                return connector.get_sell_collateral_token(trading_pair)
+            except Exception:
+                pass
+        _, quote = self._split_trading_pair(connector, trading_pair)
+        return quote
+
+    def _get_strategy_positions_for_exchange(self, exchange_name: str) -> List[Dict]:
+        """Build position views from strategy state when connector lacks positions."""
+        positions = []
+        for position_data in self.active_positions.values():
+            trading_pair = position_data.get('trading_pair')
+            edge = position_data.get('edge_decomposition')
+            if not trading_pair:
+                continue
+
+            if position_data.get('long_exchange') == exchange_name:
+                amount = position_data.get('long_amount_base')
+                entry_price = position_data.get('entry_price_long')
+                if amount is not None and entry_price is not None:
+                    leverage = getattr(edge, 'leverage_long', Decimal("1")) if edge else Decimal("1")
+                    positions.append({
+                        'trading_pair': trading_pair,
+                        'side': 'long',
+                        'amount': Decimal(str(amount)),
+                        'entry_price': Decimal(str(entry_price)),
+                        'leverage': Decimal(str(leverage)) if leverage else Decimal("1"),
+                        'unrealized_pnl': Decimal("0"),
+                    })
+
+            if position_data.get('short_exchange') == exchange_name:
+                amount = position_data.get('short_amount_base')
+                entry_price = position_data.get('entry_price_short')
+                if amount is not None and entry_price is not None:
+                    leverage = getattr(edge, 'leverage_short', Decimal("1")) if edge else Decimal("1")
+                    positions.append({
+                        'trading_pair': trading_pair,
+                        'side': 'short',
+                        'amount': Decimal(str(amount)),
+                        'entry_price': Decimal(str(entry_price)),
+                        'leverage': Decimal(str(leverage)) if leverage else Decimal("1"),
+                        'unrealized_pnl': Decimal("0"),
+                    })
+
+        return positions
+
+    async def _update_margin_monitoring(self):
+        """Feed margin monitor with account and position snapshots."""
+        self.margin_monitor.position_margins = {}
+        self.margin_monitor.margin_snapshots = {}
+
+        for exchange_name, connector in self.exchanges.items():
+            positions = self._get_connector_positions(connector)
+            using_strategy_positions = False
+            if not positions:
+                positions = self._get_strategy_positions_for_exchange(exchange_name)
+                using_strategy_positions = True
+
+            used_margin = Decimal("0")
+            sample_trading_pair = None
+
+            for position in positions:
+                if using_strategy_positions:
+                    trading_pair = position['trading_pair']
+                    side = position['side']
+                    amount = position['amount']
+                    entry_price = position['entry_price']
+                    leverage = position['leverage'] if position['leverage'] > 0 else Decimal("1")
+                    unrealized_pnl = position['unrealized_pnl']
+                else:
+                    trading_pair = position.trading_pair
+                    side = position.position_side.name.lower() if position.position_side else 'unknown'
+                    amount = Decimal(str(position.amount))
+                    entry_price = Decimal(str(position.entry_price))
+                    leverage = Decimal(str(position.leverage)) if position.leverage else Decimal("1")
+                    if leverage <= 0:
+                        leverage = Decimal("1")
+                    unrealized_pnl = Decimal(str(position.unrealized_pnl)) if position.unrealized_pnl is not None else Decimal("0")
+
+                notional_value = abs(amount) * entry_price
+                initial_margin = notional_value / leverage if leverage > 0 else notional_value
+                maintenance_margin = initial_margin * Decimal("0.5")
+                mark_price = self._get_mid_price(connector, trading_pair)
+
+                position_id = f"{exchange_name}_{trading_pair}_{side}"
+                self.margin_monitor.update_position_margin(PositionMarginInfo(
+                    position_id=position_id,
+                    exchange=exchange_name,
+                    trading_pair=trading_pair,
+                    side=side,
+                    size=abs(amount),
+                    notional_value=notional_value,
+                    leverage=leverage,
+                    initial_margin=initial_margin,
+                    maintenance_margin=maintenance_margin,
+                    unrealized_pnl=unrealized_pnl,
+                    liquidation_price=None,
+                    current_mark_price=mark_price,
+                    adl_indicator=None,
+                    timestamp=time.time(),
+                ))
+
+                used_margin += initial_margin
+                if sample_trading_pair is None:
+                    sample_trading_pair = trading_pair
+
+            if sample_trading_pair is None:
+                if self.trading_pairs:
+                    sample_trading_pair = self.trading_pairs[0]
+                else:
+                    continue
+
+            collateral_token = self._get_collateral_token(connector, sample_trading_pair)
+            if collateral_token is None:
+                continue
+
+            total_equity = self._get_total_balance(connector, collateral_token)
+            available_balance = self._get_available_balance(connector, collateral_token)
+            locked_balance = max(total_equity - available_balance, Decimal("0"))
+
+            if total_equity <= 0 and used_margin <= 0:
+                continue
+
+            if used_margin <= 0:
+                margin_ratio = Decimal("999")
+            else:
+                margin_ratio = total_equity / used_margin
+
+            free_margin = max(total_equity - used_margin, Decimal("0"))
+            maintenance_margin = used_margin * Decimal("0.5")
+
+            self.margin_monitor.update_margin_info(MarginInfo(
+                exchange=exchange_name,
+                account_id=None,
+                total_equity=total_equity,
+                used_margin=used_margin,
+                free_margin=free_margin,
+                margin_ratio=margin_ratio,
+                maintenance_margin=maintenance_margin,
+                initial_margin_req=used_margin,
+                liquidation_price=None,
+                timestamp=time.time(),
+            ))
+
     async def _calculate_position_size(self,
                                      trading_pair: str,
                                      long_exchange: str,
@@ -1153,6 +1763,17 @@ class FundingArbitrageStrategy(StrategyPyBase):
         long_connector = self.exchanges[long_exchange]
         short_connector = self.exchanges[short_exchange]
 
+        long_price = self._get_mid_price(long_connector, trading_pair)
+        short_price = self._get_mid_price(short_connector, trading_pair)
+        if long_price is None or short_price is None:
+            raise Exception("Mid price unavailable for position sizing")
+
+        long_amount_base = edge.notional_amount / long_price
+        short_amount_base = edge.notional_amount / short_price
+
+        if long_amount_base <= 0 or short_amount_base <= 0:
+            raise Exception("Invalid base amount calculated from mid prices")
+
         long_order_id = None
         short_order_id = None
         long_filled_amount = Decimal("0")
@@ -1167,7 +1788,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     connector=long_connector,
                     trading_pair=trading_pair,
                     is_buy=True,
-                    amount=edge.notional_amount
+                    amount=long_amount_base
                 )
 
             async def place_short():
@@ -1175,7 +1796,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     connector=short_connector,
                     trading_pair=trading_pair,
                     is_buy=False,
-                    amount=edge.notional_amount
+                    amount=short_amount_base
                 )
 
             # Execute both orders in parallel with exception handling
@@ -1311,8 +1932,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
 
             hedge_ok, gap_pct = await self._check_hedge_gap(
                 long_connector, short_connector, trading_pair,
-                expected_amount=edge.notional_amount,
-                max_gap_pct=Decimal("0.05")
+                expected_amount=max(long_filled_amount, short_filled_amount),
+                max_gap_pct=self.config.max_hedge_gap_percentage
             )
 
             if not hedge_ok:
@@ -1342,6 +1963,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
 
             # Phase 4: Track the position
             position_id = f"arb_{trading_pair}_{int(time.time())}"
+            long_notional = long_filled_amount * long_price
+            short_notional = short_filled_amount * short_price
 
             self.active_positions[position_id] = {
                 'trading_pair': trading_pair,
@@ -1349,11 +1972,15 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 'short_exchange': short_exchange,
                 'long_order_id': long_order_id,
                 'short_order_id': short_order_id,
-                'long_amount': long_filled_amount,
-                'short_amount': short_filled_amount,
+                'long_amount_base': long_filled_amount,
+                'short_amount_base': short_filled_amount,
+                'long_notional': long_notional,
+                'short_notional': short_notional,
                 'notional_amount': edge.notional_amount,
                 'expected_edge': edge.total_edge,
                 'entry_time': time.time(),
+                'entry_price_long': long_price,
+                'entry_price_short': short_price,
                 'edge_decomposition': edge
             }
 
@@ -1362,7 +1989,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 exchange=long_exchange,
                 subaccount=None,
                 trading_pair=trading_pair,
-                notional_amount=long_filled_amount,
+                notional_amount=long_notional,
                 leverage=edge.leverage_long,
                 side='long',
                 timestamp=time.time(),
@@ -1373,7 +2000,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 exchange=short_exchange,
                 subaccount=None,
                 trading_pair=trading_pair,
-                notional_amount=short_filled_amount,
+                notional_amount=short_notional,
                 leverage=edge.leverage_short,
                 side='short',
                 timestamp=time.time(),
@@ -1386,10 +2013,10 @@ class FundingArbitrageStrategy(StrategyPyBase):
             self.total_trades_executed += 1
             self.profitable_opportunities_taken += 1
 
-            self.logger().info(f"✅ Arbitrage position {position_id} opened successfully")
+            self.logger().info(f" Arbitrage position {position_id} opened successfully")
 
         except Exception as e:
-            self.logger().error(f"❌ Failed to execute arbitrage: {e}")
+            self.logger().error(f" Failed to execute arbitrage: {e}")
             # Position tracking not added since we failed or rolled back
             raise
 
@@ -1703,8 +2330,12 @@ class FundingArbitrageStrategy(StrategyPyBase):
         trading_pair = position_data['trading_pair']
         long_exchange = position_data['long_exchange']
         short_exchange = position_data['short_exchange']
-        long_amount = position_data.get('long_amount', position_data['notional_amount'])
-        short_amount = position_data.get('short_amount', position_data['notional_amount'])
+        long_amount = position_data.get('long_amount_base', position_data.get('long_amount'))
+        short_amount = position_data.get('short_amount_base', position_data.get('short_amount'))
+
+        if long_amount is None or short_amount is None:
+            self.logger().error(f"Missing base amounts for {position_id}, cannot close position safely")
+            return
 
         long_connector = self.exchanges[long_exchange]
         short_connector = self.exchanges[short_exchange]
@@ -1783,7 +2414,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             self.total_funding_collected += estimated_pnl
 
             self.logger().info(
-                f"✅ Position {position_id} closed: "
+                f" Position {position_id} closed: "
                 f"long={long_closed_amount}, short={short_closed_amount}, "
                 f"duration={position_duration_hours:.1f}h, estimated_pnl={estimated_pnl:.4f}"
             )
@@ -1796,7 +2427,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             self.risk_manager.remove_position_by_exchange_pair(short_exchange, trading_pair)
 
         except Exception as e:
-            self.logger().error(f"❌ Failed to close position {position_id}: {e}")
+            self.logger().error(f" Failed to close position {position_id}: {e}")
             # Still remove from tracking to avoid infinite retries
             if position_id in self.active_positions:
                 del self.active_positions[position_id]

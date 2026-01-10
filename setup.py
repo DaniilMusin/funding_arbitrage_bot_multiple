@@ -58,17 +58,14 @@ def main():
         "aiounittest>=1.4.2",
         "async-timeout>=4.0.2,<5",
         "bidict>=0.22.1",
-        "bip-utils",
         "cachetools>=5.3.1",
         "commlib-py>=0.11",
         "cryptography>=41.0.2",
         "eth-account>=0.13.0",
-        "injective-py",
         "msgpack-python",
         "numpy>=1.25.0,<2",
         "objgraph",
         "pandas>=2.0.3",
-        "pandas-ta>=0.3.14b",
         "prompt_toolkit>=3.0.39",
         "protobuf>=4.23.3",
         "psutil>=5.9.5",
@@ -77,7 +74,6 @@ def main():
         "pyperclip>=1.8.2",
         "requests>=2.31.0",
         "ruamel.yaml>=0.2.5",
-        "safe-pysha3",
         "scalecodec",
         "scipy>=1.11.1",
         "six>=1.16.0",
@@ -92,6 +88,16 @@ def main():
         "prometheus-client>=0.19.0",
         "sentry-sdk>=1.40.0",
     ]
+    # Optional deps: skip on Windows to avoid missing build toolchains
+    if os.name != "nt":
+        install_requires.extend([
+            "bip-utils",
+            "safe-pysha3",
+            "injective-py",
+        ])
+    # pandas-ta currently publishes wheels only for Python >= 3.12
+    if sys.version_info >= (3, 12):
+        install_requires.append("pandas-ta>=0.3.14b")
 
     cython_kwargs = {
         "language": "c++",

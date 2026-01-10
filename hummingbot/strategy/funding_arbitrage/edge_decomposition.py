@@ -85,7 +85,7 @@ class EdgeDecomposition:
             'Total Edge': f"{self.total_edge:.6f}",
             'Min Required': f"{self.min_edge_required:.6f}",
             'Edge Margin': f"{self.edge_margin:.6f}",
-            'Profitable': "✓" if self.is_profitable else "✗",
+            'Profitable': "YES" if self.is_profitable else "NO",
             'Notional': f"{self.notional_amount:.2f}",
             'Hedge Gap Risk': f"{self.hedge_gap_risk:.6f}",
         }
@@ -115,6 +115,8 @@ class EdgeCalculator:
                       leverage_long: Decimal = Decimal("1"),
                       leverage_short: Decimal = Decimal("1"),
                       funding_period_hours: Decimal = Decimal("8"),
+                      funding_period_hours_long: Optional[Decimal] = None,
+                      funding_period_hours_short: Optional[Decimal] = None,
                       timestamp: Optional[float] = None) -> EdgeDecomposition:
         """
         Calculate complete edge decomposition.
@@ -149,9 +151,19 @@ class EdgeCalculator:
         trading_fees_total = sum(fees_breakdown.values())
 
         # Calculate borrow costs
+        if funding_period_hours_long is None:
+            funding_period_hours_long = funding_period_hours
+        if funding_period_hours_short is None:
+            funding_period_hours_short = funding_period_hours
+
         borrow_breakdown = self._calculate_borrow_costs(
-            trading_pair, notional_amount, borrow_rates,
-            leverage_long, leverage_short, funding_period_hours
+            trading_pair,
+            notional_amount,
+            borrow_rates,
+            leverage_long,
+            leverage_short,
+            funding_period_hours_long,
+            funding_period_hours_short,
         )
         borrow_cost_total = sum(borrow_breakdown.values())
 
@@ -233,7 +245,8 @@ class EdgeCalculator:
                                borrow_rates: Dict[str, Decimal],
                                leverage_long: Decimal,
                                leverage_short: Decimal,
-                               funding_period_hours: Decimal) -> Dict[str, Decimal]:
+                               funding_period_hours_long: Decimal,
+                               funding_period_hours_short: Decimal) -> Dict[str, Decimal]:
         """Calculate borrowing costs for leveraged positions."""
         costs = {}
 
@@ -259,12 +272,12 @@ class EdgeCalculator:
         if leverage_long > Decimal("1"):
             borrow_amount_long = notional_amount * (leverage_long - Decimal("1")) / leverage_long
             borrow_rate = borrow_rates.get(quote_asset, Decimal("0.0001"))  # Default 0.01% per hour
-            costs["long_borrow"] = borrow_amount_long * borrow_rate * (funding_period_hours / Decimal("24"))
+            costs["long_borrow"] = borrow_amount_long * borrow_rate * (funding_period_hours_long / Decimal("24"))
 
         if leverage_short > Decimal("1"):
             borrow_amount_short = notional_amount * (leverage_short - Decimal("1")) / leverage_short
             borrow_rate = borrow_rates.get(base_asset, Decimal("0.0001"))
-            costs["short_borrow"] = borrow_amount_short * borrow_rate * (funding_period_hours / Decimal("24"))
+            costs["short_borrow"] = borrow_amount_short * borrow_rate * (funding_period_hours_short / Decimal("24"))
 
         return costs
 

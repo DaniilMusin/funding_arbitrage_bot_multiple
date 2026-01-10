@@ -137,7 +137,7 @@ funding_arbitrage_config_map = {
     # Position sizing
     "order_amount": ConfigVar(
         key="order_amount",
-        prompt="What is the order amount per arbitrage position (in base asset)? >>> ",
+        prompt="What is the order amount per arbitrage position (in quote currency)? >>> ",
         type_str="decimal",
         validator=lambda v: validate_decimal(v, Decimal("0"), inclusive=False),
         prompt_on_new=True
