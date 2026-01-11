@@ -135,6 +135,12 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter minimum order book depth multiplier (e.g. 3.0 means 3x position size): ",
             "prompt_on_new": False}
     )
+    close_validation_timeout_seconds: int = Field(
+        default=60,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter close validation timeout in seconds (e.g. 60): ",
+            "prompt_on_new": False}
+    )
     check_order_book_depth_enabled: bool = Field(
         default=True,
         json_schema_extra={
@@ -222,9 +228,8 @@ class FundingRateArbitrage(StrategyV2Base):
         self.last_stats_log_time = None
         self.stats_log_interval = 300  # Log stats every 5 minutes
 
-        # Track repeated hedge validation failures due to missing prices
-        self.hedge_price_unavailable_counts = {}
-        self.max_hedge_price_unavailable_checks = 3
+        # Track positions that are closing and require confirmation
+        self.closing_funding_arbitrages = {}
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -399,6 +404,9 @@ class FundingRateArbitrage(StrategyV2Base):
             counts[info["connector_1"]] = counts.get(info["connector_1"], 0) + 1
             counts[info["connector_2"]] = counts.get(info["connector_2"], 0) + 1
         for info in self.pending_funding_arbitrages.values():
+            counts[info["connector_1"]] = counts.get(info["connector_1"], 0) + 1
+            counts[info["connector_2"]] = counts.get(info["connector_2"], 0) + 1
+        for info in self.closing_funding_arbitrages.values():
             counts[info["connector_1"]] = counts.get(info["connector_1"], 0) + 1
             counts[info["connector_2"]] = counts.get(info["connector_2"], 0) + 1
         return counts
@@ -809,29 +817,19 @@ class FundingRateArbitrage(StrategyV2Base):
         if executor_1 is None or executor_2 is None:
             return False, f"Could not find executors for both connectors"
 
-        # BUG FIX #7: Check if filled_amount is None before comparison
-        if executor_1.filled_amount is None or executor_1.filled_amount <= 0:
-            return False, f"{connector_1} position not filled: {executor_1.filled_amount}"
+        # Check if filled quote amounts are available
+        filled_quote_1 = getattr(executor_1, "filled_amount_quote", None)
+        filled_quote_2 = getattr(executor_2, "filled_amount_quote", None)
 
-        if executor_2.filled_amount is None or executor_2.filled_amount <= 0:
-            return False, f"{connector_2} position not filled: {executor_2.filled_amount}"
+        if filled_quote_1 is None or filled_quote_1 <= 0:
+            return False, f"{connector_1} position not filled: {filled_quote_1}"
 
-        # Get current prices
-        trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
-        trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+        if filled_quote_2 is None or filled_quote_2 <= 0:
+            return False, f"{connector_2} position not filled: {filled_quote_2}"
 
-        # BUG FIX #1: Use safe_get_price instead of direct call
-        price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
-        price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
-
-        if price_1 is None:
-            return False, f"Price unavailable for {connector_1} {trading_pair_1}"
-        if price_2 is None:
-            return False, f"Price unavailable for {connector_2} {trading_pair_2}"
-
-        # Calculate notional values
-        notional_1 = abs(executor_1.filled_amount) * price_1
-        notional_2 = abs(executor_2.filled_amount) * price_2
+        # Use quote notional directly to avoid price dependency
+        notional_1 = abs(filled_quote_1)
+        notional_2 = abs(filled_quote_2)
 
         # Check imbalance
         if notional_1 == 0 or notional_2 == 0:
@@ -840,10 +838,10 @@ class FundingRateArbitrage(StrategyV2Base):
         imbalance = abs(notional_1 - notional_2) / max(notional_1, notional_2)
 
         if imbalance > self.config.max_position_imbalance_pct:
-            return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (N1: ${notional_1:.2f}, N2: ${notional_2:.2f})"
+            return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
 
         if imbalance > self.config.max_position_imbalance_pct * Decimal("0.5"):
-            return True, f"Warning: Position imbalance {imbalance:.2%} (N1: ${notional_1:.2f}, N2: ${notional_2:.2f})"
+            return True, f"Warning: Position imbalance {imbalance:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
 
         return True, f"Hedge OK: imbalance {imbalance:.2%}"
 
@@ -1064,7 +1062,9 @@ class FundingRateArbitrage(StrategyV2Base):
             return create_actions
 
         for token in self.config.tokens:
-            if token in self.active_funding_arbitrages or token in self.pending_funding_arbitrages:
+            if (token in self.active_funding_arbitrages
+                    or token in self.pending_funding_arbitrages
+                    or token in self.closing_funding_arbitrages):
                 continue
             funding_info_report = self.get_funding_info_by_token(token, available_connectors)
             if not funding_info_report or len(funding_info_report) < 2:
@@ -1209,6 +1209,11 @@ class FundingRateArbitrage(StrategyV2Base):
                     filter_func=lambda x: x.id in pending_info["executors_ids"]
                 )
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                self._mark_position_closing(
+                    token,
+                    pending_info,
+                    f"Pending position timeout ({time_pending:.1f}s > {timeout_seconds}s)"
+                )
                 pending_to_remove.append(token)
                 continue
 
@@ -1250,7 +1255,6 @@ class FundingRateArbitrage(StrategyV2Base):
                 recoverable_errors = [
                     "not filled yet",
                     "Zero notional value detected",
-                    "price unavailable",
                 ]
                 if any(err.lower() in hedge_msg.lower() for err in recoverable_errors):
                     self.logger().info(
@@ -1285,11 +1289,12 @@ class FundingRateArbitrage(StrategyV2Base):
                     filter_func=lambda x: x.id in pending_info["executors_ids"]
                 )
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                self._mark_position_closing(
+                    token,
+                    pending_info,
+                    f"Validation failed after retries: {hedge_msg}"
+                )
                 pending_to_remove.append(token)
-                self.stopped_funding_arbitrages[token].append({
-                    **pending_info,
-                    "close_reason": f"Validation failed after retries: {hedge_msg}"
-                })
 
         # Remove processed pending positions
         for token in pending_to_remove:
@@ -1326,28 +1331,19 @@ class FundingRateArbitrage(StrategyV2Base):
         if executor_1 is None or executor_2 is None:
             return False, f"Could not find executors for both connectors"
 
-        # Check if filled_amount exists and > 0
-        if executor_1.filled_amount is None or executor_1.filled_amount <= 0:
-            return False, f"{connector_1} position not filled yet: {executor_1.filled_amount}"
+        # Check if filled quote amounts exist and > 0
+        filled_quote_1 = getattr(executor_1, "filled_amount_quote", None)
+        filled_quote_2 = getattr(executor_2, "filled_amount_quote", None)
 
-        if executor_2.filled_amount is None or executor_2.filled_amount <= 0:
-            return False, f"{connector_2} position not filled yet: {executor_2.filled_amount}"
+        if filled_quote_1 is None or filled_quote_1 <= 0:
+            return False, f"{connector_1} position not filled yet: {filled_quote_1}"
 
-        # Get current prices
-        trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
-        trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+        if filled_quote_2 is None or filled_quote_2 <= 0:
+            return False, f"{connector_2} position not filled yet: {filled_quote_2}"
 
-        price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
-        price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
-
-        if price_1 is None:
-            return False, f"Price unavailable for {connector_1} {trading_pair_1}"
-        if price_2 is None:
-            return False, f"Price unavailable for {connector_2} {trading_pair_2}"
-
-        # Calculate notional values
-        notional_1 = abs(executor_1.filled_amount) * price_1
-        notional_2 = abs(executor_2.filled_amount) * price_2
+        # Use quote notional directly to avoid price dependency
+        notional_1 = abs(filled_quote_1)
+        notional_2 = abs(filled_quote_2)
 
         # Check imbalance
         if notional_1 == 0 or notional_2 == 0:
@@ -1356,9 +1352,111 @@ class FundingRateArbitrage(StrategyV2Base):
         imbalance = abs(notional_1 - notional_2) / max(notional_1, notional_2)
 
         if imbalance > self.config.max_position_imbalance_pct:
-            return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (N1: ${notional_1:.2f}, N2: ${notional_2:.2f})"
+            return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
 
-        return True, f"Hedge OK: imbalance {imbalance:.2%} (N1: ${notional_1:.2f}, N2: ${notional_2:.2f})"
+        return True, f"Hedge OK: imbalance {imbalance:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+
+    def _get_executors_by_ids(self, executor_ids: List[str]):
+        """
+        Get executors by id, checking both active and archived executors.
+        """
+        executors = [executor for executor in self.get_all_executors() if executor.id in executor_ids]
+        orchestrator = getattr(self, "executor_orchestrator", None)
+        if orchestrator is not None:
+            for archived_list in orchestrator.archived_executors.values():
+                for executor in archived_list:
+                    if executor.id in executor_ids and executor not in executors:
+                        executors.append(executor)
+        return executors
+
+    def _mark_position_closing(self, token: str, info: dict, reason: str):
+        """
+        Track a position as closing so we can confirm it is fully closed.
+        """
+        closing_info = dict(info)
+        closing_info["close_reason"] = reason
+        closing_info["close_timestamp"] = self.current_timestamp
+        closing_info["last_close_alert_ts"] = None
+        self.closing_funding_arbitrages[token] = closing_info
+
+    def check_closing_positions(self) -> List[StopExecutorAction]:
+        """
+        Verify that closing positions are fully terminated.
+        If a close stalls beyond the timeout, re-issue stop actions and alert.
+        """
+        stop_executor_actions = []
+        for token, closing_info in list(self.closing_funding_arbitrages.items()):
+            executor_ids = closing_info.get("executors_ids", [])
+            executors = self._get_executors_by_ids(executor_ids)
+            time_since_close = self.current_timestamp - closing_info.get("close_timestamp", self.current_timestamp)
+
+            if not executors:
+                if time_since_close > self.config.close_validation_timeout_seconds:
+                    self.logger().error(
+                        f"Closing validation failed for {token}: executors not found after "
+                        f"{time_since_close:.1f}s"
+                    )
+                    self.alerter.alert_emergency_close(
+                        token=token,
+                        reason="Close validation failed: executors not found",
+                        details={
+                            "Token": token,
+                            "Executor IDs": ", ".join(executor_ids),
+                            "Close Reason": closing_info.get("close_reason"),
+                            "Time Since Close (s)": f"{time_since_close:.1f}",
+                        }
+                    )
+                    del self.closing_funding_arbitrages[token]
+                continue
+
+            all_closed = all(executor.is_done for executor in executors)
+            if all_closed:
+                funding_payments_pnl = sum(
+                    funding_payment.amount if funding_payment.amount is not None else Decimal("0")
+                    for funding_payment in closing_info.get("funding_payments", [])
+                )
+                executors_pnl = sum(
+                    executor.net_pnl_quote if executor.net_pnl_quote is not None else Decimal("0")
+                    for executor in executors
+                )
+                total_pnl = float(executors_pnl + funding_payments_pnl)
+                close_reason = closing_info.get("close_reason", "Closed")
+
+                self.logger().info(f"Position for {token} fully closed. Reason: {close_reason}")
+                self.alerter.alert_position_closed(
+                    token=token,
+                    pnl=total_pnl,
+                    reason=close_reason
+                )
+
+                self.stopped_funding_arbitrages[token].append(closing_info)
+                if len(self.stopped_funding_arbitrages[token]) > 10:
+                    self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
+                del self.closing_funding_arbitrages[token]
+                continue
+
+            if time_since_close > self.config.close_validation_timeout_seconds:
+                last_alert_ts = closing_info.get("last_close_alert_ts")
+                if last_alert_ts is None or (self.current_timestamp - last_alert_ts) >= self.config.close_validation_timeout_seconds:
+                    self.logger().error(
+                        f"Close validation timeout for {token} after {time_since_close:.1f}s. Re-issuing stop."
+                    )
+                    self.alerter.alert_emergency_close(
+                        token=token,
+                        reason="Close validation timeout",
+                        details={
+                            "Token": token,
+                            "Executor IDs": ", ".join(executor_ids),
+                            "Close Reason": closing_info.get("close_reason"),
+                            "Time Since Close (s)": f"{time_since_close:.1f}",
+                        }
+                    )
+                    closing_info["last_close_alert_ts"] = self.current_timestamp
+                stop_executor_actions.extend(
+                    [StopExecutorAction(executor_id=executor.id) for executor in executors if not executor.is_done]
+                )
+
+        return stop_executor_actions
 
     def stop_actions_proposal(self) -> List[StopExecutorAction]:
         """
@@ -1377,69 +1475,44 @@ class FundingRateArbitrage(StrategyV2Base):
         pending_stop_actions = self.validate_pending_positions()
         stop_executor_actions.extend(pending_stop_actions)
 
+        # Verify pending closes and re-issue stop actions if needed
+        closing_stop_actions = self.check_closing_positions()
+        stop_executor_actions.extend(closing_stop_actions)
+
         tokens_to_remove = []
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
             # SAFETY CHECK: Validate position hedge (continuous monitoring)
             if self.config.position_validation_enabled:
                 is_hedged, hedge_msg = self.validate_position_hedge(token)
                 if not is_hedged:
-                    skip_emergency_close = False
-                    if "Price unavailable" in hedge_msg:
-                        failures = self.hedge_price_unavailable_counts.get(token, 0) + 1
-                        self.hedge_price_unavailable_counts[token] = failures
-                        if failures < self.max_hedge_price_unavailable_checks:
-                            self.logger().warning(
-                                f"Price unavailable for {token} ({failures}/"
-                                f"{self.max_hedge_price_unavailable_checks}); skipping emergency close this cycle."
-                            )
-                            skip_emergency_close = True
-                        else:
-                            self.logger().error(
-                                f"Price unavailable for {token} "
-                                f"{failures} times; proceeding with emergency close."
-                            )
-                    else:
-                        self.hedge_price_unavailable_counts.pop(token, None)
-
                     if self.config.emergency_close_on_imbalance:
-                        if skip_emergency_close:
-                            self.logger().warning(f"Position hedge warning for {token}: {hedge_msg}")
-                            # Continue with other exit checks (TP/SL) without forced close.
-                        else:
-                            self.logger().error(f"EMERGENCY CLOSE for {token}: {hedge_msg}")
+                        self.logger().error(f"EMERGENCY CLOSE for {token}: {hedge_msg}")
 
-                            # Send critical alert via Telegram
-                            self.alerter.alert_emergency_close(
-                                token=token,
-                                reason=hedge_msg,
-                                details={
-                                    "Exchange 1": funding_arbitrage_info["connector_1"],
-                                    "Exchange 2": funding_arbitrage_info["connector_2"],
-                                    "Position Size": f"${funding_arbitrage_info.get('position_size_quote')}",
-                                    "Timestamp": str(self.current_timestamp)
-                                }
-                            )
+                        # Send critical alert via Telegram
+                        self.alerter.alert_emergency_close(
+                            token=token,
+                            reason=hedge_msg,
+                            details={
+                                "Exchange 1": funding_arbitrage_info["connector_1"],
+                                "Exchange 2": funding_arbitrage_info["connector_2"],
+                                "Position Size": f"${funding_arbitrage_info.get('position_size_quote')}",
+                                "Timestamp": str(self.current_timestamp)
+                            }
+                        )
 
-                            executors = self.filter_executors(
-                                executors=self.get_all_executors(),
-                                filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
-                            )
-                            self.stopped_funding_arbitrages[token].append({
-                                **funding_arbitrage_info,
-                                "close_reason": f"EMERGENCY: {hedge_msg}"
-                            })
-                            if len(self.stopped_funding_arbitrages[token]) > 10:
-                                self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
-                            stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
-                            tokens_to_remove.append(token)
-                            continue
+                        executors = self.filter_executors(
+                            executors=self.get_all_executors(),
+                            filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
+                        )
+                        self._mark_position_closing(token, funding_arbitrage_info, f"EMERGENCY: {hedge_msg}")
+                        stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                        tokens_to_remove.append(token)
+                        continue
                     else:
                         self.logger().warning(f"Position hedge warning for {token}: {hedge_msg}")
                 elif "Warning" in hedge_msg:
-                    self.hedge_price_unavailable_counts.pop(token, None)
                     self.logger().warning(f"{token}: {hedge_msg}")
                 else:
-                    self.hedge_price_unavailable_counts.pop(token, None)
                     self.logger().debug(f"{token}: {hedge_msg}")
             executors = self.filter_executors(
                 executors=self.get_all_executors(),
@@ -1511,17 +1584,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.logger().info(f" Active Positions: {len(self.active_funding_arbitrages) - 1}")
                 self.logger().info("=" * 60)
 
-                # Send alert for position closed with profit
-                self.alerter.alert_position_closed(
-                    token=token,
-                    pnl=total_pnl,
-                    reason="Take profit target reached"
-                )
-
-                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
-                # Prevent memory leak: keep only last 10 stopped arbitrages per token
-                if len(self.stopped_funding_arbitrages[token]) > 10:
-                    self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
+                self._mark_position_closing(token, funding_arbitrage_info, "Take profit target reached")
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 tokens_to_remove.append(token)
             elif current_funding_condition:
@@ -1549,17 +1612,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 self.logger().info(f" Active Positions: {len(self.active_funding_arbitrages) - 1}")
                 self.logger().info("=" * 60)
 
-                # Send alert for position closed with stop loss
-                self.alerter.alert_position_closed(
-                    token=token,
-                    pnl=total_pnl,
-                    reason="Funding rate stop loss triggered"
-                )
-
-                self.stopped_funding_arbitrages[token].append(funding_arbitrage_info)
-                # Prevent memory leak: keep only last 10 stopped arbitrages per token
-                if len(self.stopped_funding_arbitrages[token]) > 10:
-                    self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
+                self._mark_position_closing(token, funding_arbitrage_info, "Funding rate stop loss triggered")
                 stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
                 tokens_to_remove.append(token)
 
@@ -1587,6 +1640,7 @@ class FundingRateArbitrage(StrategyV2Base):
         # Calculate total PnL and stats
         total_positions = len(self.active_funding_arbitrages)
         pending_positions = len(self.pending_funding_arbitrages)
+        closing_positions = len(self.closing_funding_arbitrages)
         total_funding_payments = 0
         total_pnl = Decimal("0")
 
@@ -1618,6 +1672,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.logger().info(f" Uptime: {time_since_last_log / 60:.1f} minutes since last report")
         self.logger().info(f" Active Positions: {total_positions}")
         self.logger().info(f" Pending Positions: {pending_positions}")
+        self.logger().info(f" Closing Positions: {closing_positions}")
         self.logger().info(f" Total Unrealized PnL: ${float(total_pnl):.2f}")
         self.logger().info(f" Total Funding Payments Collected: {total_funding_payments}")
         if total_positions > 0:
@@ -1647,11 +1702,17 @@ class FundingRateArbitrage(StrategyV2Base):
             return
 
         token = pair_parts[0]
+        target_info = None
         if token in self.active_funding_arbitrages:
-            self.active_funding_arbitrages[token]["funding_payments"].append(funding_payment_completed_event)
+            target_info = self.active_funding_arbitrages[token]
+        elif token in self.closing_funding_arbitrages:
+            target_info = self.closing_funding_arbitrages[token]
+
+        if target_info is not None:
+            target_info["funding_payments"].append(funding_payment_completed_event)
             # Prevent memory leak: keep only last 100 payments (enough for ~4 days on Hyperliquid, ~33 days on OKX)
-            if len(self.active_funding_arbitrages[token]["funding_payments"]) > 100:
-                self.active_funding_arbitrages[token]["funding_payments"] = self.active_funding_arbitrages[token]["funding_payments"][-100:]
+            if len(target_info["funding_payments"]) > 100:
+                target_info["funding_payments"] = target_info["funding_payments"][-100:]
 
     def get_position_executors_config(self, token, connector_1, connector_2, trade_side, position_size_quote: Decimal):
         # BUG FIX #1: Use safe_get_price instead of direct call
