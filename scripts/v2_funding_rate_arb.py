@@ -147,6 +147,30 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enable order book depth check- (True/False): ",
             "prompt_on_new": False}
     )
+    demo_mode: bool = Field(
+        default=False,
+        json_schema_extra={
+            "prompt": lambda mi: "Enable demo mode (True/False): ",
+            "prompt_on_new": False}
+    )
+    demo_account_balance_quote: Decimal = Field(
+        default=Decimal("10000"),
+        json_schema_extra={
+            "prompt": lambda mi: "Enter demo quote balance (e.g. 10000): ",
+            "prompt_on_new": False}
+    )
+    demo_fill_delay_seconds: int = Field(
+        default=2,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter demo fill delay in seconds (e.g. 2): ",
+            "prompt_on_new": False}
+    )
+    demo_close_delay_seconds: int = Field(
+        default=2,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter demo close delay in seconds (e.g. 2): ",
+            "prompt_on_new": False}
+    )
 
     @field_validator("connectors", "tokens", mode="before")
     @classmethod
@@ -278,6 +302,11 @@ class FundingRateArbitrage(StrategyV2Base):
         self.logger().info(f"   - Pending validation timeout: {self.config.pending_validation_timeout_seconds}s")
         self.logger().info(f"   - Emergency close on imbalance: {self.config.emergency_close_on_imbalance}")
         self.logger().info(f"   - Max position imbalance: {self.config.max_position_imbalance_pct:.1%}")
+        if self.config.demo_mode:
+            self.logger().info("   - Demo mode: ENABLED (no real orders will be placed)")
+            self.logger().info(f"   - Demo balance (quote): ${self.config.demo_account_balance_quote}")
+            self.logger().info(f"   - Demo fill delay: {self.config.demo_fill_delay_seconds}s")
+            self.logger().info(f"   - Demo close delay: {self.config.demo_close_delay_seconds}s")
         self.logger().info("=" * 80)
 
         self.apply_initial_setting()
@@ -325,6 +354,9 @@ class FundingRateArbitrage(StrategyV2Base):
         BUG FIX #19: Apply initial settings (position mode, leverage) with error handling.
         Prevents bot crash if exchange doesn't support requested mode or leverage.
         """
+        if self.config.demo_mode:
+            self.logger().info(" Demo mode enabled: skipping position mode and leverage setup.")
+            return
         for connector_name, connector in self.connectors.items():
             if self.is_perpetual(connector_name):
                 try:
@@ -796,6 +828,36 @@ class FundingRateArbitrage(StrategyV2Base):
         connector_1 = arbitrage_info["connector_1"]
         connector_2 = arbitrage_info["connector_2"]
 
+        if arbitrage_info.get("is_demo"):
+            filled_quote_1 = arbitrage_info.get("demo_filled_quote_1")
+            filled_quote_2 = arbitrage_info.get("demo_filled_quote_2")
+            if filled_quote_1 is None or filled_quote_2 is None:
+                return False, f"Demo filled quotes unavailable: {filled_quote_1}, {filled_quote_2}"
+            filled_quote_1 = Decimal(str(filled_quote_1))
+            filled_quote_2 = Decimal(str(filled_quote_2))
+            if filled_quote_1 <= 0:
+                return False, f"{connector_1} demo position not filled: {filled_quote_1}"
+            if filled_quote_2 <= 0:
+                return False, f"{connector_2} demo position not filled: {filled_quote_2}"
+
+            notional_1 = abs(filled_quote_1)
+            notional_2 = abs(filled_quote_2)
+            if notional_1 == 0 or notional_2 == 0:
+                return False, f"Zero notional value detected: {notional_1}, {notional_2}"
+
+            imbalance = abs(notional_1 - notional_2) / max(notional_1, notional_2)
+
+            if imbalance > self.config.max_position_imbalance_pct:
+                return False, (
+                    f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} "
+                    f"(Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+                )
+
+            if imbalance > self.config.max_position_imbalance_pct * Decimal("0.5"):
+                return True, f"Warning: Position imbalance {imbalance:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+
+            return True, f"Hedge OK: imbalance {imbalance:.2%}"
+
         # Get executors
         executors = self.filter_executors(
             executors=self.get_all_executors(),
@@ -869,6 +931,22 @@ class FundingRateArbitrage(StrategyV2Base):
 
         quote_1 = self.quote_markets_map.get(connector_1, "USDT")
         quote_2 = self.quote_markets_map.get(connector_2, "USDT")
+
+        if self.config.demo_mode:
+            demo_balance = self.config.demo_account_balance_quote
+            if demo_balance is None or demo_balance <= 0:
+                self.logger().error(f"Invalid demo balance: {demo_balance}")
+                return Decimal("0")
+            position_size_pct = self.config.position_size_quote_pct
+            if position_size_pct is not None and position_size_pct > 0:
+                if self.config.max_positions_per_connector > 0:
+                    position_size_pct = position_size_pct / Decimal(str(self.config.max_positions_per_connector))
+                max_position = demo_balance * self.config.leverage * position_size_pct
+                if self.config.position_size_quote and self.config.position_size_quote > 0:
+                    return min(self.config.position_size_quote, max_position)
+                return max_position
+            max_position = demo_balance * self.config.leverage * Decimal("0.95")
+            return min(self.config.position_size_quote, max_position)
 
         # Calculate maximum position size based on available balance and leverage
         # For perpetuals: required_margin = notional_value / leverage
@@ -1056,6 +1134,9 @@ class FundingRateArbitrage(StrategyV2Base):
         at market to open the possibilities for other people to create variations like sending limit position executors
         and if one gets filled buy market the other one to improve the entry prices.
         """
+        if self.config.demo_mode:
+            return self._create_demo_positions()
+
         create_actions = []
         available_connectors = self.get_available_connectors()
         if len(available_connectors) < 2:
@@ -1175,6 +1256,95 @@ class FundingRateArbitrage(StrategyV2Base):
                     break  # No more available connector pairs
         return create_actions
 
+    def _create_demo_positions(self) -> List[CreateExecutorAction]:
+        """
+        Demo mode: create simulated positions without placing real orders.
+        """
+        create_actions: List[CreateExecutorAction] = []
+        available_connectors = self.get_available_connectors()
+        if len(available_connectors) < 2:
+            return create_actions
+
+        for token in self.config.tokens:
+            if (token in self.active_funding_arbitrages
+                    or token in self.pending_funding_arbitrages
+                    or token in self.closing_funding_arbitrages):
+                continue
+            funding_info_report = self.get_funding_info_by_token(token, available_connectors)
+            if not funding_info_report or len(funding_info_report) < 2:
+                continue
+            best_combination = self.get_most_profitable_combination(funding_info_report)
+            if best_combination is None:
+                continue
+            connector_1, connector_2, trade_side, expected_profitability = best_combination
+            if expected_profitability >= self.config.min_funding_rate_profitability:
+                position_size_quote = self.get_position_size_quote(connector_1, connector_2)
+                if position_size_quote <= 0:
+                    self.logger().warning(f"Skipping {token}: position_size_quote is zero or negative")
+                    continue
+
+                # SAFETY CHECK: Check time to next funding settlement
+                funding_time_ok, funding_time_msg = self.check_time_to_funding(
+                    funding_info_report, connector_1, connector_2
+                )
+                if not funding_time_ok:
+                    self.logger().warning(f"Skipping {token}: {funding_time_msg}")
+                    continue
+
+                trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
+                trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+
+                expected_price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
+                expected_price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
+
+                if expected_price_1 is None or expected_price_2 is None:
+                    self.logger().warning(
+                        f"Skipping {token}: Price unavailable for demo entry (C1: {expected_price_1}, C2: {expected_price_2})"
+                    )
+                    continue
+
+                slippage_ok, slippage_msg = self.check_slippage(
+                    token, connector_1, connector_2, expected_price_1, expected_price_2, position_size_quote
+                )
+                if not slippage_ok:
+                    self.logger().warning(f"Skipping {token}: {slippage_msg}")
+                    continue
+
+                depth_ok, depth_msg = self.check_order_book_depth(
+                    token, connector_1, connector_2, position_size_quote, trade_side
+                )
+                if not depth_ok:
+                    self.logger().warning(f"Skipping {token}: {depth_msg}")
+                    continue
+
+                self.pending_funding_arbitrages[token] = {
+                    "connector_1": connector_1,
+                    "connector_2": connector_2,
+                    "executors_ids": [],
+                    "side": trade_side,
+                    "funding_payments": [],
+                    "position_size_quote": position_size_quote,
+                    "timestamp": self.current_timestamp,
+                    "validation_attempts": 0,
+                    "last_validation_error": None,
+                    "is_demo": True,
+                    "demo_entry_price_1": expected_price_1,
+                    "demo_entry_price_2": expected_price_2,
+                    "demo_filled_quote_1": position_size_quote,
+                    "demo_filled_quote_2": position_size_quote,
+                }
+
+                self.logger().info(
+                    f"DEMO position for {token} marked as PENDING. "
+                    "Will simulate fills after delay."
+                )
+
+                available_connectors = self.get_available_connectors()
+                if len(available_connectors) < 2:
+                    break
+
+        return create_actions
+
     def validate_pending_positions(self) -> List[StopExecutorAction]:
         """
         CRITICAL: Validate pending positions before marking them as active.
@@ -1188,6 +1358,39 @@ class FundingRateArbitrage(StrategyV2Base):
         for token, pending_info in list(self.pending_funding_arbitrages.items()):
             connector_1 = pending_info["connector_1"]
             connector_2 = pending_info["connector_2"]
+
+            if pending_info.get("is_demo"):
+                time_pending = self.current_timestamp - pending_info.get("timestamp", self.current_timestamp)
+                if time_pending < self.config.demo_fill_delay_seconds:
+                    continue
+                pending_info["demo_last_funding_ts"] = self.current_timestamp
+                pending_info["demo_accrued_funding_pnl"] = pending_info.get("demo_accrued_funding_pnl", Decimal("0"))
+                self.active_funding_arbitrages[token] = pending_info
+                pending_to_remove.append(token)
+
+                self.logger().info("=" * 60)
+                self.logger().info(f" DEMO POSITION OPENED: {token}")
+                self.logger().info("=" * 60)
+                self.logger().info(" Position Details:")
+                self.logger().info(f"   - Token: {token}")
+                self.logger().info(f"   - Exchange 1: {connector_1}")
+                self.logger().info(f"   - Exchange 2: {connector_2}")
+                self.logger().info(f"   - Side: {pending_info['side']}")
+                self.logger().info(f"   - Position Size: ${pending_info['position_size_quote']}")
+                self.logger().info("   - Mode: DEMO (simulated fills)")
+                self.logger().info(f"   - Time to validate: {time_pending:.2f}s")
+                self.logger().info(
+                    f" Active Positions: {len(self.active_funding_arbitrages)} | Pending: {len(self.pending_funding_arbitrages) - 1}"
+                )
+                self.logger().info("=" * 60)
+
+                self.alerter.alert_position_opened(
+                    token=token,
+                    connector_1=connector_1,
+                    connector_2=connector_2,
+                    position_size=float(pending_info["position_size_quote"])
+                )
+                continue
 
             # Check timeout (if pending exceeds configured threshold)
             time_pending = self.current_timestamp - pending_info.get("timestamp", self.current_timestamp)
@@ -1310,6 +1513,29 @@ class FundingRateArbitrage(StrategyV2Base):
         connector_1 = pending_info["connector_1"]
         connector_2 = pending_info["connector_2"]
 
+        if pending_info.get("is_demo"):
+            filled_quote_1 = pending_info.get("demo_filled_quote_1")
+            filled_quote_2 = pending_info.get("demo_filled_quote_2")
+            if filled_quote_1 is None or filled_quote_2 is None:
+                return False, f"Demo filled quotes unavailable: {filled_quote_1}, {filled_quote_2}"
+            filled_quote_1 = Decimal(str(filled_quote_1))
+            filled_quote_2 = Decimal(str(filled_quote_2))
+            if filled_quote_1 <= 0:
+                return False, f"{connector_1} demo position not filled yet: {filled_quote_1}"
+            if filled_quote_2 <= 0:
+                return False, f"{connector_2} demo position not filled yet: {filled_quote_2}"
+            notional_1 = abs(filled_quote_1)
+            notional_2 = abs(filled_quote_2)
+            if notional_1 == 0 or notional_2 == 0:
+                return False, f"Zero notional value detected: {notional_1}, {notional_2}"
+            imbalance = abs(notional_1 - notional_2) / max(notional_1, notional_2)
+            if imbalance > self.config.max_position_imbalance_pct:
+                return False, (
+                    f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} "
+                    f"(Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+                )
+            return True, f"Hedge OK: imbalance {imbalance:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+
         # Get executors
         executors = self.filter_executors(
             executors=self.get_all_executors(),
@@ -1349,12 +1575,100 @@ class FundingRateArbitrage(StrategyV2Base):
         if notional_1 == 0 or notional_2 == 0:
             return False, f"Zero notional value detected: {notional_1}, {notional_2}"
 
-        imbalance = abs(notional_1 - notional_2) / max(notional_1, notional_2)
+            imbalance = abs(notional_1 - notional_2) / max(notional_1, notional_2)
 
-        if imbalance > self.config.max_position_imbalance_pct:
-            return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+            if imbalance > self.config.max_position_imbalance_pct:
+                return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
 
-        return True, f"Hedge OK: imbalance {imbalance:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+            return True, f"Hedge OK: imbalance {imbalance:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+
+    def _calculate_demo_trade_pnl(self, token: str, info: dict) -> Decimal | None:
+        connector_1 = info.get("connector_1")
+        connector_2 = info.get("connector_2")
+        if connector_1 is None or connector_2 is None:
+            return None
+
+        trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
+        trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+        current_price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
+        current_price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
+        if current_price_1 is None or current_price_2 is None:
+            return None
+
+        entry_price_1 = info.get("demo_entry_price_1")
+        entry_price_2 = info.get("demo_entry_price_2")
+        if entry_price_1 is None or entry_price_2 is None:
+            return None
+
+        filled_quote_1 = info.get("demo_filled_quote_1")
+        filled_quote_2 = info.get("demo_filled_quote_2")
+        position_size = info.get("position_size_quote")
+        if position_size is None or position_size <= 0:
+            return None
+
+        if filled_quote_1 is None:
+            filled_quote_1 = position_size
+        if filled_quote_2 is None:
+            filled_quote_2 = position_size
+
+        entry_price_1 = Decimal(str(entry_price_1))
+        entry_price_2 = Decimal(str(entry_price_2))
+        filled_quote_1 = Decimal(str(filled_quote_1))
+        filled_quote_2 = Decimal(str(filled_quote_2))
+
+        if entry_price_1 <= 0 or entry_price_2 <= 0 or filled_quote_1 <= 0 or filled_quote_2 <= 0:
+            return None
+
+        base_amount_1 = filled_quote_1 / entry_price_1
+        base_amount_2 = filled_quote_2 / entry_price_2
+
+        if info["side"] == TradeType.BUY:
+            pnl_1 = (current_price_1 - entry_price_1) * base_amount_1
+            pnl_2 = (entry_price_2 - current_price_2) * base_amount_2
+        else:
+            pnl_1 = (entry_price_1 - current_price_1) * base_amount_1
+            pnl_2 = (current_price_2 - entry_price_2) * base_amount_2
+
+        return pnl_1 + pnl_2
+
+    def _update_demo_funding_pnl(
+            self, info: dict, rate_connector_1: Decimal | None, rate_connector_2: Decimal | None
+    ) -> Decimal:
+        accrued = info.get("demo_accrued_funding_pnl")
+        if accrued is None:
+            accrued = Decimal("0")
+        last_ts = info.get("demo_last_funding_ts")
+        if last_ts is None:
+            info["demo_last_funding_ts"] = self.current_timestamp
+            info["demo_accrued_funding_pnl"] = accrued
+            return accrued
+
+        dt = self.current_timestamp - last_ts
+        if dt <= 0:
+            return accrued
+
+        if rate_connector_1 is None or rate_connector_2 is None:
+            info["demo_last_funding_ts"] = self.current_timestamp
+            info["demo_accrued_funding_pnl"] = accrued
+            return accrued
+
+        position_size = info.get("position_size_quote")
+        if position_size is None or position_size <= 0:
+            info["demo_last_funding_ts"] = self.current_timestamp
+            info["demo_accrued_funding_pnl"] = accrued
+            return accrued
+
+        if info["side"] == TradeType.BUY:
+            diff = rate_connector_2 - rate_connector_1
+        else:
+            diff = rate_connector_1 - rate_connector_2
+
+        dt_decimal = Decimal(str(dt))
+        position_size = Decimal(str(position_size))
+        accrued = accrued + diff * dt_decimal * position_size
+        info["demo_last_funding_ts"] = self.current_timestamp
+        info["demo_accrued_funding_pnl"] = accrued
+        return accrued
 
     def _get_executors_by_ids(self, executor_ids: List[str]):
         """
@@ -1369,7 +1683,14 @@ class FundingRateArbitrage(StrategyV2Base):
                         executors.append(executor)
         return executors
 
-    def _mark_position_closing(self, token: str, info: dict, reason: str):
+    def _mark_position_closing(
+            self,
+            token: str,
+            info: dict,
+            reason: str,
+            is_demo: bool = False,
+            demo_pnl: Decimal | None = None
+    ):
         """
         Track a position as closing so we can confirm it is fully closed.
         """
@@ -1377,6 +1698,10 @@ class FundingRateArbitrage(StrategyV2Base):
         closing_info["close_reason"] = reason
         closing_info["close_timestamp"] = self.current_timestamp
         closing_info["last_close_alert_ts"] = None
+        if is_demo or closing_info.get("is_demo"):
+            closing_info["is_demo"] = True
+            if demo_pnl is not None:
+                closing_info["demo_close_pnl"] = demo_pnl
         self.closing_funding_arbitrages[token] = closing_info
 
     def check_closing_positions(self) -> List[StopExecutorAction]:
@@ -1386,9 +1711,26 @@ class FundingRateArbitrage(StrategyV2Base):
         """
         stop_executor_actions = []
         for token, closing_info in list(self.closing_funding_arbitrages.items()):
+            time_since_close = self.current_timestamp - closing_info.get("close_timestamp", self.current_timestamp)
+
+            if closing_info.get("is_demo"):
+                if time_since_close >= self.config.demo_close_delay_seconds:
+                    total_pnl = float(closing_info.get("demo_close_pnl", Decimal("0")))
+                    close_reason = closing_info.get("close_reason", "Closed")
+                    self.logger().info(f"DEMO position for {token} fully closed. Reason: {close_reason}")
+                    self.alerter.alert_position_closed(
+                        token=token,
+                        pnl=total_pnl,
+                        reason=close_reason
+                    )
+                    self.stopped_funding_arbitrages[token].append(closing_info)
+                    if len(self.stopped_funding_arbitrages[token]) > 10:
+                        self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
+                    del self.closing_funding_arbitrages[token]
+                continue
+
             executor_ids = closing_info.get("executors_ids", [])
             executors = self._get_executors_by_ids(executor_ids)
-            time_since_close = self.current_timestamp - closing_info.get("close_timestamp", self.current_timestamp)
 
             if not executors:
                 if time_since_close > self.config.close_validation_timeout_seconds:
@@ -1481,6 +1823,9 @@ class FundingRateArbitrage(StrategyV2Base):
 
         tokens_to_remove = []
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
+            connector_1 = funding_arbitrage_info["connector_1"]
+            connector_2 = funding_arbitrage_info["connector_2"]
+            is_demo = funding_arbitrage_info.get("is_demo", False)
             # SAFETY CHECK: Validate position hedge (continuous monitoring)
             if self.config.position_validation_enabled:
                 is_hedged, hedge_msg = self.validate_position_hedge(token)
@@ -1500,6 +1845,27 @@ class FundingRateArbitrage(StrategyV2Base):
                             }
                         )
 
+                        if is_demo:
+                            funding_info_report = self.get_funding_info_by_token(token)
+                            rate_connector_1 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
+                            rate_connector_2 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
+                            funding_payments_pnl = self._update_demo_funding_pnl(
+                                funding_arbitrage_info, rate_connector_1, rate_connector_2
+                            )
+                            trade_pnl = self._calculate_demo_trade_pnl(token, funding_arbitrage_info)
+                            if trade_pnl is None:
+                                trade_pnl = Decimal("0")
+                            demo_total_pnl = trade_pnl + funding_payments_pnl
+                            self._mark_position_closing(
+                                token,
+                                funding_arbitrage_info,
+                                f"EMERGENCY: {hedge_msg}",
+                                is_demo=True,
+                                demo_pnl=demo_total_pnl
+                            )
+                            tokens_to_remove.append(token)
+                            continue
+
                         executors = self.filter_executors(
                             executors=self.get_all_executors(),
                             filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
@@ -1514,6 +1880,107 @@ class FundingRateArbitrage(StrategyV2Base):
                     self.logger().warning(f"{token}: {hedge_msg}")
                 else:
                     self.logger().debug(f"{token}: {hedge_msg}")
+
+            if is_demo:
+                position_size = funding_arbitrage_info.get("position_size_quote")
+                if position_size is None or position_size <= 0:
+                    self.logger().error(f"Invalid position_size_quote for DEMO {token}: {position_size}")
+                    continue
+
+                funding_info_report = self.get_funding_info_by_token(token)
+                rate_connector_1 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
+                rate_connector_2 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
+                funding_rate_diff = None
+                current_funding_condition = False
+                if rate_connector_1 is None or rate_connector_2 is None:
+                    self.logger().warning(
+                        f"Funding rates unavailable for {token} on {connector_1}/{connector_2}; "
+                        "skipping funding-rate stop check"
+                    )
+                else:
+                    if funding_arbitrage_info["side"] == TradeType.BUY:
+                        funding_rate_diff = rate_connector_2 - rate_connector_1
+                    else:
+                        funding_rate_diff = rate_connector_1 - rate_connector_2
+                    current_funding_condition = (
+                        funding_rate_diff * self.funding_profitability_interval < self.config.funding_rate_diff_stop_loss
+                    )
+
+                funding_payments_pnl = self._update_demo_funding_pnl(
+                    funding_arbitrage_info, rate_connector_1, rate_connector_2
+                )
+                trade_pnl = self._calculate_demo_trade_pnl(token, funding_arbitrage_info)
+                if trade_pnl is None:
+                    self.logger().warning(f"DEMO PnL unavailable for {token}: price data missing")
+                    trade_pnl = Decimal("0")
+
+                total_pnl = trade_pnl + funding_payments_pnl
+                take_profit_condition = total_pnl > (
+                    self.config.profitability_to_take_profit * position_size)
+
+                if take_profit_condition:
+                    total_pnl_float = float(total_pnl)
+                    total_pnl_pct = (total_pnl_float / float(position_size)) * 100 if position_size > 0 else 0
+
+                    self.logger().info("=" * 60)
+                    self.logger().info(f" DEMO TAKE PROFIT REACHED: {token}")
+                    self.logger().info("=" * 60)
+                    self.logger().info(f" Position Details:")
+                    self.logger().info(f"   - Token: {token}")
+                    self.logger().info(f"   - Exchange 1: {connector_1}")
+                    self.logger().info(f"   - Exchange 2: {connector_2}")
+                    self.logger().info(f"   - Side: {funding_arbitrage_info['side']}")
+                    self.logger().info(f"   - Position Size: ${position_size}")
+                    self.logger().info(f" PnL Summary:")
+                    self.logger().info(f"   - Trading PnL: ${trade_pnl:.2f}")
+                    self.logger().info(f"   - Funding PnL (simulated): ${funding_payments_pnl:.2f}")
+                    self.logger().info(f"   - Total PnL: ${total_pnl_float:.2f} ({total_pnl_pct:+.2f}%)")
+                    self.logger().info(f"   - Funding Payments Collected: {len(funding_arbitrage_info['funding_payments'])}")
+                    self.logger().info(f" Active Positions: {len(self.active_funding_arbitrages) - 1}")
+                    self.logger().info("=" * 60)
+
+                    self._mark_position_closing(
+                        token,
+                        funding_arbitrage_info,
+                        "DEMO take profit target reached",
+                        is_demo=True,
+                        demo_pnl=total_pnl
+                    )
+                    tokens_to_remove.append(token)
+                elif current_funding_condition:
+                    total_pnl_float = float(total_pnl)
+                    total_pnl_pct = (total_pnl_float / float(position_size)) * 100 if position_size > 0 else 0
+
+                    self.logger().info("=" * 60)
+                    self.logger().info(f" DEMO STOP LOSS TRIGGERED: {token}")
+                    self.logger().info("=" * 60)
+                    self.logger().info(f" Position Details:")
+                    self.logger().info(f"   - Token: {token}")
+                    self.logger().info(f"   - Exchange 1: {connector_1}")
+                    self.logger().info(f"   - Exchange 2: {connector_2}")
+                    self.logger().info(f"   - Side: {funding_arbitrage_info['side']}")
+                    self.logger().info(f"   - Position Size: ${position_size}")
+                    self.logger().info(f" Reason:")
+                    self.logger().info(f"   - Funding Rate Diff: {funding_rate_diff:.6f}")
+                    self.logger().info(f"   - Stop Loss Threshold: {self.config.funding_rate_diff_stop_loss:.6f}")
+                    self.logger().info(f" PnL Summary:")
+                    self.logger().info(f"   - Trading PnL: ${trade_pnl:.2f}")
+                    self.logger().info(f"   - Funding PnL (simulated): ${funding_payments_pnl:.2f}")
+                    self.logger().info(f"   - Total PnL: ${total_pnl_float:.2f} ({total_pnl_pct:+.2f}%)")
+                    self.logger().info(f"   - Funding Payments Collected: {len(funding_arbitrage_info['funding_payments'])}")
+                    self.logger().info(f" Active Positions: {len(self.active_funding_arbitrages) - 1}")
+                    self.logger().info("=" * 60)
+
+                    self._mark_position_closing(
+                        token,
+                        funding_arbitrage_info,
+                        "DEMO funding rate stop loss triggered",
+                        is_demo=True,
+                        demo_pnl=total_pnl
+                    )
+                    tokens_to_remove.append(token)
+                continue
+
             executors = self.filter_executors(
                 executors=self.get_all_executors(),
                 filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
@@ -1645,6 +2112,14 @@ class FundingRateArbitrage(StrategyV2Base):
         total_pnl = Decimal("0")
 
         for token, arb_info in self.active_funding_arbitrages.items():
+            if arb_info.get("is_demo"):
+                trade_pnl = self._calculate_demo_trade_pnl(token, arb_info)
+                if trade_pnl is None:
+                    trade_pnl = Decimal("0")
+                funding_payments_pnl = arb_info.get("demo_accrued_funding_pnl", Decimal("0"))
+                total_pnl += trade_pnl + funding_payments_pnl
+                continue
+
             # Count funding payments
             total_funding_payments += len(arb_info["funding_payments"])
 
