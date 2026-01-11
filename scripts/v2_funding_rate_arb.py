@@ -10,6 +10,7 @@ from hummingbot.client.ui.interface_utils import format_df_for_printout
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.clock import Clock
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PriceType, TradeType
+from hummingbot.core.data_type.funding_info import FundingInfo
 from hummingbot.core.event.events import FundingPaymentCompletedEvent
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase
@@ -1363,7 +1364,6 @@ class FundingRateArbitrage(StrategyV2Base):
                 time_pending = self.current_timestamp - pending_info.get("timestamp", self.current_timestamp)
                 if time_pending < self.config.demo_fill_delay_seconds:
                     continue
-                pending_info["demo_last_funding_ts"] = self.current_timestamp
                 pending_info["demo_accrued_funding_pnl"] = pending_info.get("demo_accrued_funding_pnl", Decimal("0"))
                 self.active_funding_arbitrages[token] = pending_info
                 pending_to_remove.append(token)
@@ -1632,7 +1632,7 @@ class FundingRateArbitrage(StrategyV2Base):
         return pnl_1 + pnl_2
 
     def _update_demo_funding_pnl(
-            self, info: dict, rate_connector_1: Decimal | None, rate_connector_2: Decimal | None
+            self, info: dict, funding_info_1: FundingInfo | None, funding_info_2: FundingInfo | None
     ) -> Decimal:
         accrued = info.get("demo_accrued_funding_pnl")
         if accrued is None:
@@ -1640,32 +1640,50 @@ class FundingRateArbitrage(StrategyV2Base):
         else:
             accrued = Decimal(str(accrued))
         info["demo_accrued_funding_pnl"] = accrued
-        last_ts = info.get("demo_last_funding_ts")
-        if last_ts is None:
-            info["demo_last_funding_ts"] = self.current_timestamp
-            info["demo_accrued_funding_pnl"] = accrued
-            return accrued
 
-        dt = self.current_timestamp - last_ts
-        if dt <= 0:
-            return accrued
-
-        if rate_connector_1 is None or rate_connector_2 is None:
+        if self.current_timestamp is None:
             return accrued
 
         position_size = info.get("position_size_quote")
         if position_size is None or position_size <= 0:
             return accrued
+        position_size = Decimal(str(position_size))
+
+        connector_1 = info.get("connector_1")
+        connector_2 = info.get("connector_2")
+
+        def apply_funding(connector_name: str | None, funding_info: FundingInfo | None, is_long: bool, key_suffix: str):
+            nonlocal accrued
+            if connector_name is None or funding_info is None:
+                return
+            rate = getattr(funding_info, "rate", None)
+            if rate is None:
+                return
+            interval = self.funding_payment_interval_map.get(connector_name, 60 * 60 * 8)
+            if interval <= 0:
+                return
+
+            next_ts_key = f"demo_next_funding_ts_{key_suffix}"
+            next_ts = info.get(next_ts_key)
+            if next_ts is None:
+                next_ts = getattr(funding_info, "next_funding_utc_timestamp", None)
+            if next_ts is None:
+                return
+
+            rate = Decimal(str(rate))
+            while self.current_timestamp >= next_ts:
+                payment = (-rate if is_long else rate) * position_size
+                accrued += payment
+                next_ts += interval
+            info[next_ts_key] = next_ts
 
         if info["side"] == TradeType.BUY:
-            diff = rate_connector_2 - rate_connector_1
+            apply_funding(connector_1, funding_info_1, True, "1")
+            apply_funding(connector_2, funding_info_2, False, "2")
         else:
-            diff = rate_connector_1 - rate_connector_2
+            apply_funding(connector_1, funding_info_1, False, "1")
+            apply_funding(connector_2, funding_info_2, True, "2")
 
-        dt_decimal = Decimal(str(dt))
-        position_size = Decimal(str(position_size))
-        accrued = accrued + diff * dt_decimal * position_size
-        info["demo_last_funding_ts"] = self.current_timestamp
         info["demo_accrued_funding_pnl"] = accrued
         return accrued
 
@@ -1846,10 +1864,10 @@ class FundingRateArbitrage(StrategyV2Base):
 
                         if is_demo:
                             funding_info_report = self.get_funding_info_by_token(token)
-                            rate_connector_1 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
-                            rate_connector_2 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
+                            funding_info_1 = funding_info_report.get(connector_1) if funding_info_report else None
+                            funding_info_2 = funding_info_report.get(connector_2) if funding_info_report else None
                             funding_payments_pnl = self._update_demo_funding_pnl(
-                                funding_arbitrage_info, rate_connector_1, rate_connector_2
+                                funding_arbitrage_info, funding_info_1, funding_info_2
                             )
                             trade_pnl = self._calculate_demo_trade_pnl(token, funding_arbitrage_info)
                             if trade_pnl is None:
@@ -1887,6 +1905,8 @@ class FundingRateArbitrage(StrategyV2Base):
                     continue
 
                 funding_info_report = self.get_funding_info_by_token(token)
+                funding_info_1 = funding_info_report.get(connector_1) if funding_info_report else None
+                funding_info_2 = funding_info_report.get(connector_2) if funding_info_report else None
                 rate_connector_1 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
                 rate_connector_2 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
                 funding_rate_diff = None
@@ -1906,7 +1926,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     )
 
                 funding_payments_pnl = self._update_demo_funding_pnl(
-                    funding_arbitrage_info, rate_connector_1, rate_connector_2
+                    funding_arbitrage_info, funding_info_1, funding_info_2
                 )
                 trade_pnl = self._calculate_demo_trade_pnl(token, funding_arbitrage_info)
                 if trade_pnl is None:
