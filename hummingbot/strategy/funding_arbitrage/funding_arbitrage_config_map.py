@@ -51,6 +51,31 @@ def trading_pair_on_validated(value: str) -> None:
                 requried_connector_trading_pairs[exchange].append(value)
 
 
+def trading_pairs_validator(value: str) -> Optional[str]:
+    """Validate comma-separated trading pairs for all configured exchanges."""
+    if not value:
+        return "At least one trading pair is required"
+
+    pairs = [pair.strip() for pair in value.split(",") if pair.strip()]
+    if not pairs:
+        return "At least one trading pair is required"
+
+    for pair in pairs:
+        if trading_pair_validator(pair) is not None:
+            return f"Invalid trading pair {pair}"
+
+    return None
+
+
+def trading_pairs_on_validated(value: str) -> None:
+    """Add trading pairs to required pairs for all exchanges."""
+    if not value:
+        return
+    pairs = [pair.strip() for pair in value.split(",") if pair.strip()]
+    for pair in pairs:
+        trading_pair_on_validated(pair)
+
+
 def trading_pair_prompt() -> str:
     """Generate trading pair prompt."""
     exchanges = []
@@ -114,6 +139,13 @@ funding_arbitrage_config_map = {
         required_if=lambda: not funding_arbitrage_config_map.get("auto_select_pairs").value,
         validator=trading_pair_validator,
         on_validated=trading_pair_on_validated
+    ),
+    "candidate_trading_pairs": ConfigVar(
+        key="candidate_trading_pairs",
+        prompt="Enter candidate trading pairs for auto selection (comma-separated) >>> ",
+        required_if=lambda: funding_arbitrage_config_map.get("auto_select_pairs").value,
+        validator=trading_pairs_validator,
+        on_validated=trading_pairs_on_validated
     ),
 
     # Auto selection parameters

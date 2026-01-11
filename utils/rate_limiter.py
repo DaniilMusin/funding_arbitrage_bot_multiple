@@ -60,12 +60,13 @@ class RateLimiter:
         while history and history[0] < current_time - window:
             history.popleft()
 
-    def wait_if_needed(self, exchange: str) -> float:
+    def wait_if_needed(self, exchange: str, block: bool = True) -> float:
         """
         Wait if rate limit would be exceeded.
 
         Args:
             exchange: Exchange name (e.g., "okx_perpetual")
+            block: If True, sleep until request is allowed; if False, return wait time without sleeping.
 
         Returns:
             Wait time in seconds (0 if no wait needed)
@@ -93,6 +94,8 @@ class RateLimiter:
 
                 if wait_time > 0:
                     self.logger.debug(f"Rate limit reached for {exchange}: waiting {wait_time:.3f}s")
+                    if not block:
+                        return wait_time
                     time.sleep(wait_time)
                     current_time = time.time()
 

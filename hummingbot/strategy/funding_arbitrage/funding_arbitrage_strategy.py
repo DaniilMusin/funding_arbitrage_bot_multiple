@@ -309,7 +309,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
                         connector=long_connector,
                         trading_pair=trading_pair,
                         is_buy=False,  # SELL to reduce long
-                        amount=reduce_amount_long
+                        amount=reduce_amount_long,
+                        position_action=PositionAction.CLOSE
                     )
                 )
 
@@ -333,7 +334,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
                         connector=short_connector,
                         trading_pair=trading_pair,
                         is_buy=True,  # BUY to reduce short
-                        amount=reduce_amount_short
+                        amount=reduce_amount_short,
+                        position_action=PositionAction.CLOSE
                     )
                 )
 
@@ -1788,7 +1790,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     connector=long_connector,
                     trading_pair=trading_pair,
                     is_buy=True,
-                    amount=long_amount_base
+                    amount=long_amount_base,
+                    position_action=PositionAction.OPEN
                 )
 
             async def place_short():
@@ -1796,7 +1799,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     connector=short_connector,
                     trading_pair=trading_pair,
                     is_buy=False,
-                    amount=short_amount_base
+                    amount=short_amount_base,
+                    position_action=PositionAction.OPEN
                 )
 
             # Execute both orders in parallel with exception handling
@@ -1819,7 +1823,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     try:
                         await self._emergency_close(
                             short_connector, trading_pair, is_long=False,
-                            amount=edge.notional_amount, reason="Long order placement failed"
+                            amount=short_amount_base, reason="Long order placement failed"
                         )
                     except Exception as e:
                         self.logger().error(f"Failed to emergency close short after long failure: {e}")
@@ -1833,7 +1837,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 try:
                     await self._emergency_close(
                         long_connector, trading_pair, is_long=True,
-                        amount=edge.notional_amount, reason="Short order placement failed"
+                        amount=long_amount_base, reason="Short order placement failed"
                     )
                 except Exception as e:
                     self.logger().error(f"Failed to emergency close long after short failure: {e}")
@@ -2025,7 +2029,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
                          trading_pair: str,
                          is_buy: bool,
                          amount: Decimal,
-                         price: Optional[Decimal] = None) -> str:
+                         price: Optional[Decimal] = None,
+                         position_action: PositionAction = PositionAction.NIL) -> str:
         """
         Place order on exchange with proper error handling.
 
@@ -2035,6 +2040,7 @@ class FundingArbitrageStrategy(StrategyPyBase):
             is_buy: True for buy, False for sell
             amount: Order amount in base currency
             price: Optional limit price (None for market orders)
+            position_action: OPEN/CLOSE intent for derivatives
 
         Returns:
             Order ID from exchange
@@ -2053,14 +2059,16 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     trading_pair=trading_pair,
                     amount=amount,
                     order_type=order_type,
-                    price=price
+                    price=price,
+                    position_action=position_action
                 )
             else:
                 order_id = connector.sell(
                     trading_pair=trading_pair,
                     amount=amount,
                     order_type=order_type,
-                    price=price
+                    price=price,
+                    position_action=position_action
                 )
 
             self.logger().info(
@@ -2208,7 +2216,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
                 trading_pair=trading_pair,
                 is_buy=not is_long,  # Sell to close long, buy to close short
                 amount=amount,
-                price=None  # Market order for immediate execution
+                price=None,  # Market order for immediate execution
+                position_action=PositionAction.CLOSE
             )
 
             # Wait for fill (shorter timeout for emergency)
@@ -2350,7 +2359,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     connector=long_connector,
                     trading_pair=trading_pair,
                     is_buy=False,  # SELL to close long
-                    amount=long_amount
+                    amount=long_amount,
+                    position_action=PositionAction.CLOSE
                 )
                 filled, filled_amount = await self._verify_order_filled(
                     long_connector, order_id, timeout_seconds=30
@@ -2363,7 +2373,8 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     connector=short_connector,
                     trading_pair=trading_pair,
                     is_buy=True,  # BUY to close short
-                    amount=short_amount
+                    amount=short_amount,
+                    position_action=PositionAction.CLOSE
                 )
                 filled, filled_amount = await self._verify_order_filled(
                     short_connector, order_id, timeout_seconds=30
@@ -2402,8 +2413,14 @@ class FundingArbitrageStrategy(StrategyPyBase):
                     f"Failed to close position {position_id} completely: "
                     f"long_closed={long_closed}, short_closed={short_closed}"
                 )
-                # Even if close failed, we remove from tracking to avoid infinite retries
-                # Manual intervention may be needed
+                position_data["close_attempts"] = position_data.get("close_attempts", 0) + 1
+                position_data["last_close_reason"] = reason
+                position_data["last_close_timestamp"] = time.time()
+                self.logger().critical(
+                    f"MANUAL INTERVENTION REQUIRED: {position_id} close failed; "
+                    "position remains tracked for retry."
+                )
+                return
 
             # Calculate actual PnL
             # In real implementation, this would fetch actual funding payments received
@@ -2428,9 +2445,9 @@ class FundingArbitrageStrategy(StrategyPyBase):
 
         except Exception as e:
             self.logger().error(f" Failed to close position {position_id}: {e}")
-            # Still remove from tracking to avoid infinite retries
-            if position_id in self.active_positions:
-                del self.active_positions[position_id]
+            position_data["close_attempts"] = position_data.get("close_attempts", 0) + 1
+            position_data["last_close_error"] = str(e)
+            position_data["last_close_timestamp"] = time.time()
             raise
 
     def start(self):

@@ -29,9 +29,24 @@ def start(self):
 
     # Get trading pair(s)
     if auto_select_pairs:
-        # Auto mode: will scan all pairs, initialize with empty list
+        # Auto mode: scan within provided candidate pairs
         trading_pair = None
-        self.logger().info("Auto pair selection enabled - will scan all available pairs")
+        candidate_pairs_value = funding_arbitrage_config_map.get("candidate_trading_pairs").value
+        if candidate_pairs_value:
+            trading_pairs = [
+                pair.strip()
+                for pair in str(candidate_pairs_value).split(",")
+                if pair.strip()
+            ]
+        if not trading_pairs:
+            self.logger().error(
+                "Auto pair selection requires candidate_trading_pairs to be set."
+            )
+            return
+        self.logger().info(
+            "Auto pair selection enabled - scanning candidate pairs: "
+            f"{', '.join(trading_pairs)}"
+        )
     else:
         # Manual mode: use specified pair
         trading_pair = funding_arbitrage_config_map.get("trading_pair").value
@@ -45,7 +60,7 @@ def start(self):
             exchange_name = funding_arbitrage_config_map.get(key).value
             if exchange_name:
                 # In auto mode, don't specify pairs - will be discovered
-                pairs_to_init = [trading_pair] if trading_pair else []
+                pairs_to_init = trading_pairs if trading_pairs else ([trading_pair] if trading_pair else [])
                 exchange_connectors.append((exchange_name.lower(), pairs_to_init))
 
     if not exchange_connectors:
@@ -103,6 +118,7 @@ def start(self):
         self.logger().info(
             f"Funding arbitrage strategy initialized (AUTO MODE):\n"
             f"  Exchanges: {', '.join(exchanges.keys())}\n"
+            f"  Candidate pairs: {', '.join(trading_pairs)}\n"
             f"  Max trading pairs: {max_trading_pairs}\n"
             f"  Pair scan interval: {pair_scan_interval}s\n"
             f"  Order amount: {order_amount}\n"

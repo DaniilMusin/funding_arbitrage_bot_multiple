@@ -52,6 +52,23 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt_on_new": True
         }
     )
+    position_size_quote_pct: Decimal = Field(
+        default=Decimal("0"),
+        ge=0,
+        le=1,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter position size budget as % of initial balance (0 to disable, e.g. 1.0 for 100%). If max_positions_per_connector > 0, budget is split across positions: ",
+            "prompt_on_new": False
+        }
+    )
+    max_positions_per_connector: int = Field(
+        default=0,
+        ge=0,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter max positions per connector (0 = unlimited): ",
+            "prompt_on_new": False
+        }
+    )
     profitability_to_take_profit: Decimal = Field(
         default=0.01,
         json_schema_extra={
@@ -76,10 +93,22 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter the maximum allowed slippage percentage (e.g. 0.005 for 0.5%): ",
             "prompt_on_new": False}
     )
+    rate_limit_blocking: bool = Field(
+        default=True,
+        json_schema_extra={
+            "prompt": lambda mi: "Block on rate limit (True/False): ",
+            "prompt_on_new": False}
+    )
     position_validation_enabled: bool = Field(
         default=True,
         json_schema_extra={
             "prompt": lambda mi: "Enable position validation after opening- (True/False): ",
+            "prompt_on_new": False}
+    )
+    pending_validation_timeout_seconds: int = Field(
+        default=10,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter pending validation timeout in seconds (0 to disable): ",
             "prompt_on_new": False}
     )
     emergency_close_on_imbalance: bool = Field(
@@ -175,6 +204,7 @@ class FundingRateArbitrage(StrategyV2Base):
         self.pending_funding_arbitrages = {}  # NEW: positions awaiting validation
         self.stopped_funding_arbitrages = {token: [] for token in self.config.tokens}
         self.pending_validation_max_attempts = 3
+        self.initial_balances = {}
 
         # Initialize Telegram alerter for critical event monitoring
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -191,6 +221,10 @@ class FundingRateArbitrage(StrategyV2Base):
         # BUG FIX #20: Track last statistics logging time
         self.last_stats_log_time = None
         self.stats_log_interval = 300  # Log stats every 5 minutes
+
+        # Track repeated hedge validation failures due to missing prices
+        self.hedge_price_unavailable_counts = {}
+        self.max_hedge_price_unavailable_checks = 3
 
     def start(self, clock: Clock, timestamp: float) -> None:
         """
@@ -210,13 +244,33 @@ class FundingRateArbitrage(StrategyV2Base):
         self.logger().info(f"   - Tokens: {', '.join(sorted(self.config.tokens))}")
         self.logger().info(f"   - Leverage: {self.config.leverage}x")
         self.logger().info(f"   - Min funding rate: {self.config.min_funding_rate_profitability:.4%}")
-        self.logger().info(f"   - Position size: ${self.config.position_size_quote}")
+        if self.config.position_size_quote_pct > 0:
+            if self.config.max_positions_per_connector > 0:
+                per_position_pct = self.config.position_size_quote_pct / Decimal(str(self.config.max_positions_per_connector))
+                self.logger().info(
+                    f"   - Position size budget: {self.config.position_size_quote_pct:.0%} of initial balance split across "
+                    f"{self.config.max_positions_per_connector} positions ({per_position_pct:.4%} per position)"
+                )
+            else:
+                self.logger().info(
+                    f"   - Position size: {self.config.position_size_quote_pct:.0%} of initial balance per connector"
+                )
+            if self.config.position_size_quote > 0:
+                self.logger().info(f"   - Position size cap: ${self.config.position_size_quote}")
+        else:
+            self.logger().info(f"   - Position size: ${self.config.position_size_quote}")
         self.logger().info(f"   - Max slippage: {self.config.max_slippage_pct:.2%}")
+        self.logger().info(f"   - Rate limit blocking: {self.config.rate_limit_blocking}")
         self.logger().info(f"   - Min time to funding: {self.config.min_time_to_next_funding_seconds}s")
         self.logger().info(f"   - Order book depth check: {self.config.check_order_book_depth_enabled}")
         if self.config.check_order_book_depth_enabled:
             self.logger().info(f"   - Min order book depth: {self.config.min_order_book_depth_multiplier}x position size")
+        if self.config.max_positions_per_connector > 0:
+            self.logger().info(f"   - Max positions per connector: {self.config.max_positions_per_connector}")
+        else:
+            self.logger().info("   - Max positions per connector: unlimited")
         self.logger().info(f"   - Position validation: {self.config.position_validation_enabled}")
+        self.logger().info(f"   - Pending validation timeout: {self.config.pending_validation_timeout_seconds}s")
         self.logger().info(f"   - Emergency close on imbalance: {self.config.emergency_close_on_imbalance}")
         self.logger().info(f"   - Max position imbalance: {self.config.max_position_imbalance_pct:.1%}")
         self.logger().info("=" * 80)
@@ -291,8 +345,21 @@ class FundingRateArbitrage(StrategyV2Base):
                         # Continue with other connectors even if this fails
                         continue
 
-                    # Set leverage for each trading pair
-                    trading_pairs = self.market_data_provider.get_trading_pairs(connector_name)
+                    # Set leverage only for configured tokens to reduce API load
+                    desired_pairs = {
+                        self.get_trading_pair_for_connector(token, connector_name)
+                        for token in self.config.tokens
+                    }
+                    available_pairs = set(self.market_data_provider.get_trading_pairs(connector_name) or [])
+                    if available_pairs:
+                        trading_pairs = sorted(desired_pairs & available_pairs)
+                        missing_pairs = desired_pairs - available_pairs
+                        if missing_pairs:
+                            self.logger().debug(
+                                f" Skipping {len(missing_pairs)} non-listed pairs on {connector_name}"
+                            )
+                    else:
+                        trading_pairs = sorted(desired_pairs)
                     for trading_pair in trading_pairs:
                         try:
                             connector.set_leverage(trading_pair, self.config.leverage)
@@ -326,17 +393,40 @@ class FundingRateArbitrage(StrategyV2Base):
                     self.track_error()
                     # Continue with other connectors
 
-    def get_connectors_in_use(self) -> Set[str]:
-        connectors = set()
-        # Include active positions
+    def get_connector_position_counts(self) -> Dict[str, int]:
+        counts = {connector: 0 for connector in self.config.connectors}
         for info in self.active_funding_arbitrages.values():
-            connectors.add(info["connector_1"])
-            connectors.add(info["connector_2"])
-        # Also include pending positions (don't allow new positions on same connectors)
+            counts[info["connector_1"]] = counts.get(info["connector_1"], 0) + 1
+            counts[info["connector_2"]] = counts.get(info["connector_2"], 0) + 1
         for info in self.pending_funding_arbitrages.values():
-            connectors.add(info["connector_1"])
-            connectors.add(info["connector_2"])
-        return connectors
+            counts[info["connector_1"]] = counts.get(info["connector_1"], 0) + 1
+            counts[info["connector_2"]] = counts.get(info["connector_2"], 0) + 1
+        return counts
+
+    def get_connectors_in_use(self) -> Set[str]:
+        # Only block connectors if a per-connector cap is set
+        if self.config.max_positions_per_connector <= 0:
+            return set()
+        counts = self.get_connector_position_counts()
+        return {
+            connector for connector, count in counts.items()
+            if count >= self.config.max_positions_per_connector
+        }
+
+    def get_available_connectors(self) -> Set[str]:
+        if self.config.max_positions_per_connector <= 0:
+            return set(self.config.connectors)
+        return set(self.config.connectors) - self.get_connectors_in_use()
+
+    def _apply_rate_limit(self, connector_name: str, action: str) -> bool:
+        wait_time = self.rate_limiter.wait_if_needed(connector_name, block=self.config.rate_limit_blocking)
+        if not self.config.rate_limit_blocking and wait_time > 0:
+            self.logger().debug(
+                f"Rate limit hit for {connector_name}; skipping {action} (wait {wait_time:.3f}s)"
+            )
+            return False
+        return True
+
 
     # ========================================
     # SAFE API WRAPPERS (Bug fixes #1-10)
@@ -348,8 +438,8 @@ class FundingRateArbitrage(StrategyV2Base):
         Safe wrapper for get_price_by_type with error handling.
         Returns None if price unavailable instead of crashing.
         """
-        # Apply rate limiting
-        self.rate_limiter.wait_if_needed(connector_name)
+        if not self._apply_rate_limit(connector_name, "price"):
+            return None
 
         try:
             price = self.market_data_provider.get_price_by_type(
@@ -372,8 +462,8 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def safe_get_price_for_volume(self, connector_name: str, trading_pair: str, quote_volume: Decimal, is_buy: bool) -> Decimal | None:
         """Safe wrapper for get_price_for_quote_volume with error handling."""
-        # Apply rate limiting
-        self.rate_limiter.wait_if_needed(connector_name)
+        if not self._apply_rate_limit(connector_name, "price_for_volume"):
+            return None
 
         try:
             result = self.market_data_provider.get_price_for_quote_volume(
@@ -397,8 +487,8 @@ class FundingRateArbitrage(StrategyV2Base):
 
     def safe_get_balance(self, connector_name: str, currency: str) -> Decimal | None:
         """Safe wrapper for get_available_balance with error handling."""
-        # Apply rate limiting
-        self.rate_limiter.wait_if_needed(connector_name)
+        if not self._apply_rate_limit(connector_name, "balance"):
+            return None
 
         try:
             connector = self.connectors.get(connector_name)
@@ -423,8 +513,8 @@ class FundingRateArbitrage(StrategyV2Base):
                     order_type: OrderType, order_side: TradeType, amount: Decimal,
                     price: Decimal, is_maker: bool, position_action: PositionAction) -> Decimal | None:
         """Safe wrapper for get_fee with error handling."""
-        # Apply rate limiting
-        self.rate_limiter.wait_if_needed(connector_name)
+        if not self._apply_rate_limit(connector_name, "fee"):
+            return None
 
         try:
             connector = self.connectors.get(connector_name)
@@ -639,8 +729,8 @@ class FundingRateArbitrage(StrategyV2Base):
 
         Returns (is_sufficient, message)
         """
-        # Apply rate limiting
-        self.rate_limiter.wait_if_needed(connector_name)
+        if not self._apply_rate_limit(connector_name, "order_book_depth"):
+            return False, f"Rate limit hit for {connector_name}"
 
         try:
             connector = self.connectors.get(connector_name)
@@ -757,11 +847,22 @@ class FundingRateArbitrage(StrategyV2Base):
 
         return True, f"Hedge OK: imbalance {imbalance:.2%}"
 
+    def get_initial_balance(self, connector_name: str, currency: str) -> Decimal | None:
+        key = (connector_name, currency)
+        if key in self.initial_balances:
+            return self.initial_balances[key]
+        balance = self.safe_get_balance(connector_name, currency)
+        if balance is None:
+            return None
+        self.initial_balances[key] = balance
+        return balance
+
     def get_position_size_quote(self, connector_1: str, connector_2: str) -> Decimal:
         """
         Calculate the maximum position size in quote currency considering available balance and leverage.
         Note: position_size_quote is the notional value WITHOUT leverage, so we need to ensure
-        we have enough margin (notional / leverage) available.
+        we have enough margin (notional / leverage) available. If position_size_quote_pct > 0,
+        sizing is based on the initial available balance captured at startup.
         """
         # BUG FIX #12: Check leverage before calculation
         if self.config.leverage <= 0:
@@ -771,6 +872,27 @@ class FundingRateArbitrage(StrategyV2Base):
         quote_1 = self.quote_markets_map.get(connector_1, "USDT")
         quote_2 = self.quote_markets_map.get(connector_2, "USDT")
 
+        # Calculate maximum position size based on available balance and leverage
+        # For perpetuals: required_margin = notional_value / leverage
+        # So: max_notional = available_balance * leverage
+        position_size_pct = self.config.position_size_quote_pct
+        if position_size_pct is not None and position_size_pct > 0:
+            if self.config.max_positions_per_connector > 0:
+                position_size_pct = position_size_pct / Decimal(str(self.config.max_positions_per_connector))
+            initial_balance_1 = self.get_initial_balance(connector_1, quote_1)
+            initial_balance_2 = self.get_initial_balance(connector_2, quote_2)
+            if initial_balance_1 is None or initial_balance_2 is None:
+                self.logger().warning(
+                    f"Initial balance unavailable for {connector_1} or {connector_2}"
+                )
+                return Decimal("0")
+            max_position_1 = initial_balance_1 * self.config.leverage * position_size_pct
+            max_position_2 = initial_balance_2 * self.config.leverage * position_size_pct
+            max_position = min(max_position_1, max_position_2)
+            if self.config.position_size_quote and self.config.position_size_quote > 0:
+                return min(self.config.position_size_quote, max_position)
+            return max_position
+
         # BUG FIX #3: Use safe_get_balance instead of direct call
         balance_1 = self.safe_get_balance(connector_1, quote_1)
         balance_2 = self.safe_get_balance(connector_2, quote_2)
@@ -779,15 +901,9 @@ class FundingRateArbitrage(StrategyV2Base):
             self.logger().warning(f"Balance unavailable for {connector_1} or {connector_2}")
             return Decimal("0")
 
-        # Calculate maximum position size based on available balance and leverage
-        # For perpetuals: required_margin = notional_value / leverage
-        # So: max_notional = available_balance * leverage
-        # However, we limit to min(config.position_size_quote, available_balance * leverage)
-        # to be conservative and leave some buffer for fees
+        # Fallback: Use fixed position size, capped by available balance * leverage
         max_position_1 = balance_1 * self.config.leverage * Decimal("0.95")  # 95% to leave buffer for fees
         max_position_2 = balance_2 * self.config.leverage * Decimal("0.95")
-
-        # Use the configured position size, but don't exceed available balance * leverage
         return min(self.config.position_size_quote, max_position_1, max_position_2)
 
     def get_funding_info_by_token(self, token, connectors: Set[str] | None = None):
@@ -903,6 +1019,8 @@ class FundingRateArbitrage(StrategyV2Base):
                         continue
                     rate_connector_1 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
                     rate_connector_2 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
+                    if rate_connector_1 is None or rate_connector_2 is None:
+                        continue
                     funding_rate_diff = abs(rate_connector_1 - rate_connector_2) * self.funding_profitability_interval
                     if funding_rate_diff > highest_profitability:
                         trade_side = TradeType.BUY if rate_connector_1 < rate_connector_2 else TradeType.SELL
@@ -910,24 +1028,24 @@ class FundingRateArbitrage(StrategyV2Base):
                         best_combination = (connector_1, connector_2, trade_side, funding_rate_diff)
         return best_combination
 
-    def get_normalized_funding_rate_in_seconds(self, funding_info_report, connector_name):
+    def get_normalized_funding_rate_in_seconds(self, funding_info_report, connector_name) -> Decimal | None:
         """
         BUG FIX #13: Safe access to funding_info_report with validation.
         """
         # Check if connector exists in report
         if connector_name not in funding_info_report:
             self.logger().warning(f"Connector {connector_name} not in funding_info_report")
-            return Decimal("0")
+            return None
 
         funding_info = funding_info_report[connector_name]
         if funding_info is None or funding_info.rate is None:
             self.logger().warning(f"Funding info or rate is None for {connector_name}")
-            return Decimal("0")
+            return None
 
         interval = self.funding_payment_interval_map.get(connector_name, 60 * 60 * 8)
         if interval <= 0:
             self.logger().error(f"Invalid funding payment interval for {connector_name}: {interval}")
-            return Decimal("0")
+            return None
 
         return Decimal(str(funding_info.rate)) / Decimal(str(interval))
 
@@ -941,122 +1059,120 @@ class FundingRateArbitrage(StrategyV2Base):
         and if one gets filled buy market the other one to improve the entry prices.
         """
         create_actions = []
-        connectors_in_use = self.get_connectors_in_use()
-        available_connectors = set(self.config.connectors) - connectors_in_use
+        available_connectors = self.get_available_connectors()
         if len(available_connectors) < 2:
             return create_actions
 
         for token in self.config.tokens:
-            if token not in self.active_funding_arbitrages:
-                funding_info_report = self.get_funding_info_by_token(token, available_connectors)
-                if not funding_info_report or len(funding_info_report) < 2:
+            if token in self.active_funding_arbitrages or token in self.pending_funding_arbitrages:
+                continue
+            funding_info_report = self.get_funding_info_by_token(token, available_connectors)
+            if not funding_info_report or len(funding_info_report) < 2:
+                continue
+            best_combination = self.get_most_profitable_combination(funding_info_report)
+            if best_combination is None:
+                continue
+            connector_1, connector_2, trade_side, expected_profitability = best_combination
+            if expected_profitability >= self.config.min_funding_rate_profitability:
+                position_size_quote = self.get_position_size_quote(connector_1, connector_2)
+                if position_size_quote <= 0:
+                    self.logger().warning(f"Skipping {token}: position_size_quote is zero or negative")
                     continue
-                best_combination = self.get_most_profitable_combination(funding_info_report)
-                if best_combination is None:
+
+                # SAFETY CHECK 1: Validate sufficient balance
+                balance_valid, balance_msg = self.validate_sufficient_balance(connector_1, connector_2, position_size_quote)
+                if not balance_valid:
+                    self.logger().warning(f"Skipping {token}: {balance_msg}")
                     continue
-                connector_1, connector_2, trade_side, expected_profitability = best_combination
-                if expected_profitability >= self.config.min_funding_rate_profitability:
-                    position_size_quote = self.get_position_size_quote(connector_1, connector_2)
-                    if position_size_quote <= 0:
-                        self.logger().warning(f"Skipping {token}: position_size_quote is zero or negative")
-                        continue
 
-                    # SAFETY CHECK 1: Validate sufficient balance
-                    balance_valid, balance_msg = self.validate_sufficient_balance(connector_1, connector_2, position_size_quote)
-                    if not balance_valid:
-                        self.logger().warning(f"Skipping {token}: {balance_msg}")
-                        continue
+                # SAFETY CHECK 1.5: Check time to next funding settlement (BUG FIX #17)
+                # Don't open position if too close to funding time (would miss payment)
+                funding_time_ok, funding_time_msg = self.check_time_to_funding(funding_info_report, connector_1, connector_2)
+                if not funding_time_ok:
+                    self.logger().warning(f"Skipping {token}: {funding_time_msg}")
+                    continue
 
-                    # SAFETY CHECK 1.5: Check time to next funding settlement (BUG FIX #17)
-                    # Don't open position if too close to funding time (would miss payment)
-                    funding_time_ok, funding_time_msg = self.check_time_to_funding(funding_info_report, connector_1, connector_2)
-                    if not funding_time_ok:
-                        self.logger().warning(f"Skipping {token}: {funding_time_msg}")
-                        continue
-
-                    current_profitability = self.get_current_profitability_after_fees(
-                        token, connector_1, connector_2, trade_side, position_size_quote
+                current_profitability = self.get_current_profitability_after_fees(
+                    token, connector_1, connector_2, trade_side, position_size_quote
+                )
+                if current_profitability == Decimal("-999"):
+                    self.logger().warning(
+                        f"Skipping {token}: profitability calculation failed for {connector_1}/{connector_2}"
                     )
-                    if current_profitability == Decimal("-999"):
-                        self.logger().warning(
-                            f"Skipping {token}: profitability calculation failed for {connector_1}/{connector_2}"
-                        )
+                    continue
+
+                # SAFETY CHECK 2: Slippage protection
+                trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
+                trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+
+                # BUG FIX #16: Use safe_get_price instead of direct call to prevent TypeError crash
+                expected_price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
+                expected_price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
+
+                if expected_price_1 is None or expected_price_2 is None:
+                    self.logger().warning(f"Skipping {token}: Price unavailable for slippage check (C1: {expected_price_1}, C2: {expected_price_2})")
+                    continue
+
+                slippage_ok, slippage_msg = self.check_slippage(
+                    token, connector_1, connector_2, expected_price_1, expected_price_2, position_size_quote
+                )
+                if not slippage_ok:
+                    self.logger().warning(f"Skipping {token}: {slippage_msg}")
+                    continue
+                elif slippage_msg:
+                    self.logger().info(f"{token}: {slippage_msg}")
+
+                # SAFETY CHECK 3: Order book depth protection (BUG FIX #18)
+                # Ensure sufficient liquidity to execute and close positions
+                depth_ok, depth_msg = self.check_order_book_depth(token, connector_1, connector_2, position_size_quote, trade_side)
+                if not depth_ok:
+                    self.logger().warning(f"Skipping {token}: {depth_msg}")
+                    continue
+                elif "OK" in depth_msg:
+                    self.logger().debug(f"{token}: {depth_msg}")
+
+                if self.config.trade_profitability_condition_to_enter:
+                    if current_profitability < 0:
+                        self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
+                                           f"Funding rate profitability: {expected_profitability}"
+                                           f"Trading profitability after fees: {current_profitability}"
+                                           f"Trade profitability is negative, skipping...")
                         continue
+                self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
+                                   f"Funding rate profitability: {expected_profitability}"
+                                   f"Trading profitability after fees: {current_profitability}"
+                                   f"Starting executors...")
+                position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(
+                    token, connector_1, connector_2, trade_side, position_size_quote)
 
-                    # SAFETY CHECK 2: Slippage protection
-                    trading_pair_1 = self.get_trading_pair_for_connector(token, connector_1)
-                    trading_pair_2 = self.get_trading_pair_for_connector(token, connector_2)
+                # Check if configs were created successfully
+                if position_executor_config_1 is None or position_executor_config_2 is None:
+                    self.logger().error(f"Failed to create executor configs for {token}, skipping")
+                    continue
 
-                    # BUG FIX #16: Use safe_get_price instead of direct call to prevent TypeError crash
-                    expected_price_1 = self.safe_get_price(connector_1, trading_pair_1, PriceType.MidPrice)
-                    expected_price_2 = self.safe_get_price(connector_2, trading_pair_2, PriceType.MidPrice)
+                # CRITICAL FIX: Add to PENDING first (not active!)
+                # Position will be validated and moved to active in stop_actions_proposal
+                self.pending_funding_arbitrages[token] = {
+                    "connector_1": connector_1,
+                    "connector_2": connector_2,
+                    "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
+                    "side": trade_side,
+                    "funding_payments": [],
+                    "position_size_quote": position_size_quote,
+                    "timestamp": self.current_timestamp,  # Track when pending started
+                    "validation_attempts": 0,
+                    "last_validation_error": None,
+                }
 
-                    if expected_price_1 is None or expected_price_2 is None:
-                        self.logger().warning(f"Skipping {token}: Price unavailable for slippage check (C1: {expected_price_1}, C2: {expected_price_2})")
-                        continue
+                self.logger().info(f"Position for {token} marked as PENDING. Awaiting validation after execution.")
 
-                    slippage_ok, slippage_msg = self.check_slippage(
-                        token, connector_1, connector_2, expected_price_1, expected_price_2, position_size_quote
-                    )
-                    if not slippage_ok:
-                        self.logger().warning(f"Skipping {token}: {slippage_msg}")
-                        continue
-                    elif slippage_msg:
-                        self.logger().info(f"{token}: {slippage_msg}")
-
-                    # SAFETY CHECK 3: Order book depth protection (BUG FIX #18)
-                    # Ensure sufficient liquidity to execute and close positions
-                    depth_ok, depth_msg = self.check_order_book_depth(token, connector_1, connector_2, position_size_quote, trade_side)
-                    if not depth_ok:
-                        self.logger().warning(f"Skipping {token}: {depth_msg}")
-                        continue
-                    elif "OK" in depth_msg:
-                        self.logger().debug(f"{token}: {depth_msg}")
-
-                    if self.config.trade_profitability_condition_to_enter:
-                        if current_profitability < 0:
-                            self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
-                                               f"Funding rate profitability: {expected_profitability}"
-                                               f"Trading profitability after fees: {current_profitability}"
-                                               f"Trade profitability is negative, skipping...")
-                            continue
-                    self.logger().info(f"Best Combination: {connector_1} | {connector_2} | {trade_side}"
-                                       f"Funding rate profitability: {expected_profitability}"
-                                       f"Trading profitability after fees: {current_profitability}"
-                                       f"Starting executors...")
-                    position_executor_config_1, position_executor_config_2 = self.get_position_executors_config(
-                        token, connector_1, connector_2, trade_side, position_size_quote)
-
-                    # Check if configs were created successfully
-                    if position_executor_config_1 is None or position_executor_config_2 is None:
-                        self.logger().error(f"Failed to create executor configs for {token}, skipping")
-                        continue
-
-                    # CRITICAL FIX: Add to PENDING first (not active!)
-                    # Position will be validated and moved to active in stop_actions_proposal
-                    self.pending_funding_arbitrages[token] = {
-                        "connector_1": connector_1,
-                        "connector_2": connector_2,
-                        "executors_ids": [position_executor_config_1.id, position_executor_config_2.id],
-                        "side": trade_side,
-                        "funding_payments": [],
-                        "position_size_quote": position_size_quote,
-                        "timestamp": self.current_timestamp,  # Track when pending started
-                        "validation_attempts": 0,
-                        "last_validation_error": None,
-                    }
-
-                    self.logger().info(f"Position for {token} marked as PENDING. Awaiting validation after execution.")
-
-                    # Add to create_actions list and continue checking other tokens
-                    create_actions.extend([CreateExecutorAction(executor_config=position_executor_config_1),
-                                          CreateExecutorAction(executor_config=position_executor_config_2)])
-                    # Update connectors_in_use and available_connectors for next iteration
-                    connectors_in_use.add(connector_1)
-                    connectors_in_use.add(connector_2)
-                    available_connectors = set(self.config.connectors) - connectors_in_use
-                    if len(available_connectors) < 2:
-                        break  # No more available connector pairs
+                # Add to create_actions list and continue checking other tokens
+                create_actions.extend([CreateExecutorAction(executor_config=position_executor_config_1),
+                                      CreateExecutorAction(executor_config=position_executor_config_2)])
+                # Refresh available connectors to respect per-connector caps
+                available_connectors = self.get_available_connectors()
+                if len(available_connectors) < 2:
+                    break  # No more available connector pairs
         return create_actions
 
     def validate_pending_positions(self) -> List[StopExecutorAction]:
@@ -1073,13 +1189,14 @@ class FundingRateArbitrage(StrategyV2Base):
             connector_1 = pending_info["connector_1"]
             connector_2 = pending_info["connector_2"]
 
-            # Check timeout (if pending > 10 seconds, something is wrong)
+            # Check timeout (if pending exceeds configured threshold)
             time_pending = self.current_timestamp - pending_info.get("timestamp", self.current_timestamp)
-            if time_pending > 10:
-                self.logger().error(f"Pending position for {token} timed out ({time_pending:.1f}s). Emergency closing.")
+            timeout_seconds = self.config.pending_validation_timeout_seconds
+            if timeout_seconds > 0 and time_pending > timeout_seconds:
+                self.logger().error(f"Pending position for {token} timed out ({time_pending:.1f}s > {timeout_seconds}s). Emergency closing.")
                 self.alerter.alert_emergency_close(
                     token=token,
-                    reason=f"Pending position timeout ({time_pending:.1f}s > 10s)",
+                    reason=f"Pending position timeout ({time_pending:.1f}s > {timeout_seconds}s)",
                     details={
                         "Exchange 1": connector_1,
                         "Exchange 2": connector_2,
@@ -1133,6 +1250,7 @@ class FundingRateArbitrage(StrategyV2Base):
                 recoverable_errors = [
                     "not filled yet",
                     "Zero notional value detected",
+                    "price unavailable",
                 ]
                 if any(err.lower() in hedge_msg.lower() for err in recoverable_errors):
                     self.logger().info(
@@ -1265,39 +1383,63 @@ class FundingRateArbitrage(StrategyV2Base):
             if self.config.position_validation_enabled:
                 is_hedged, hedge_msg = self.validate_position_hedge(token)
                 if not is_hedged:
+                    skip_emergency_close = False
+                    if "Price unavailable" in hedge_msg:
+                        failures = self.hedge_price_unavailable_counts.get(token, 0) + 1
+                        self.hedge_price_unavailable_counts[token] = failures
+                        if failures < self.max_hedge_price_unavailable_checks:
+                            self.logger().warning(
+                                f"Price unavailable for {token} ({failures}/"
+                                f"{self.max_hedge_price_unavailable_checks}); skipping emergency close this cycle."
+                            )
+                            skip_emergency_close = True
+                        else:
+                            self.logger().error(
+                                f"Price unavailable for {token} "
+                                f"{failures} times; proceeding with emergency close."
+                            )
+                    else:
+                        self.hedge_price_unavailable_counts.pop(token, None)
+
                     if self.config.emergency_close_on_imbalance:
-                        self.logger().error(f"EMERGENCY CLOSE for {token}: {hedge_msg}")
+                        if skip_emergency_close:
+                            self.logger().warning(f"Position hedge warning for {token}: {hedge_msg}")
+                            # Continue with other exit checks (TP/SL) without forced close.
+                        else:
+                            self.logger().error(f"EMERGENCY CLOSE for {token}: {hedge_msg}")
 
-                        # Send critical alert via Telegram
-                        self.alerter.alert_emergency_close(
-                            token=token,
-                            reason=hedge_msg,
-                            details={
-                                "Exchange 1": funding_arbitrage_info["connector_1"],
-                                "Exchange 2": funding_arbitrage_info["connector_2"],
-                                "Position Size": f"${self.config.position_size_quote}",
-                                "Timestamp": str(self.current_timestamp)
-                            }
-                        )
+                            # Send critical alert via Telegram
+                            self.alerter.alert_emergency_close(
+                                token=token,
+                                reason=hedge_msg,
+                                details={
+                                    "Exchange 1": funding_arbitrage_info["connector_1"],
+                                    "Exchange 2": funding_arbitrage_info["connector_2"],
+                                    "Position Size": f"${funding_arbitrage_info.get('position_size_quote')}",
+                                    "Timestamp": str(self.current_timestamp)
+                                }
+                            )
 
-                        executors = self.filter_executors(
-                            executors=self.get_all_executors(),
-                            filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
-                        )
-                        self.stopped_funding_arbitrages[token].append({
-                            **funding_arbitrage_info,
-                            "close_reason": f"EMERGENCY: {hedge_msg}"
-                        })
-                        if len(self.stopped_funding_arbitrages[token]) > 10:
-                            self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
-                        stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
-                        tokens_to_remove.append(token)
-                        continue
+                            executors = self.filter_executors(
+                                executors=self.get_all_executors(),
+                                filter_func=lambda x: x.id in funding_arbitrage_info["executors_ids"]
+                            )
+                            self.stopped_funding_arbitrages[token].append({
+                                **funding_arbitrage_info,
+                                "close_reason": f"EMERGENCY: {hedge_msg}"
+                            })
+                            if len(self.stopped_funding_arbitrages[token]) > 10:
+                                self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
+                            stop_executor_actions.extend([StopExecutorAction(executor_id=executor.id) for executor in executors])
+                            tokens_to_remove.append(token)
+                            continue
                     else:
                         self.logger().warning(f"Position hedge warning for {token}: {hedge_msg}")
                 elif "Warning" in hedge_msg:
+                    self.hedge_price_unavailable_counts.pop(token, None)
                     self.logger().warning(f"{token}: {hedge_msg}")
                 else:
+                    self.hedge_price_unavailable_counts.pop(token, None)
                     self.logger().debug(f"{token}: {hedge_msg}")
             executors = self.filter_executors(
                 executors=self.get_all_executors(),
@@ -1325,21 +1467,27 @@ class FundingRateArbitrage(StrategyV2Base):
             take_profit_condition = executors_pnl + funding_payments_pnl > (
                 self.config.profitability_to_take_profit * position_size)
 
-            # Get funding info and check if connectors are available
+            # Get funding info and compute funding-rate stop condition (if available)
             funding_info_report = self.get_funding_info_by_token(token)
             connector_1 = funding_arbitrage_info["connector_1"]
             connector_2 = funding_arbitrage_info["connector_2"]
-
-            # Check if both connectors are available in funding_info_report
-            if connector_1 not in funding_info_report or connector_2 not in funding_info_report:
-                self.logger().warning(f"Connectors {connector_1} or {connector_2} not available for token {token}, skipping stop check")
-                continue
-
-            if funding_arbitrage_info["side"] == TradeType.BUY:
-                funding_rate_diff = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2) - self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
+            rate_connector_1 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1)
+            rate_connector_2 = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
+            funding_rate_diff = None
+            current_funding_condition = False
+            if rate_connector_1 is None or rate_connector_2 is None:
+                self.logger().warning(
+                    f"Funding rates unavailable for {token} on {connector_1}/{connector_2}; "
+                    "skipping funding-rate stop check"
+                )
             else:
-                funding_rate_diff = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_1) - self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_2)
-            current_funding_condition = funding_rate_diff * self.funding_profitability_interval < self.config.funding_rate_diff_stop_loss
+                if funding_arbitrage_info["side"] == TradeType.BUY:
+                    funding_rate_diff = rate_connector_2 - rate_connector_1
+                else:
+                    funding_rate_diff = rate_connector_1 - rate_connector_2
+                current_funding_condition = (
+                    funding_rate_diff * self.funding_profitability_interval < self.config.funding_rate_diff_stop_loss
+                )
 
             if take_profit_condition:
                 # BUG FIX #20: Enhanced logging for position closing
@@ -1564,7 +1712,10 @@ class FundingRateArbitrage(StrategyV2Base):
 
                 # Add funding rates to token_info
                 for connector_name, info in funding_info_report.items():
-                    token_info[f"{connector_name} Rate (%)"] = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_name) * self.funding_profitability_interval * 100
+                    rate = self.get_normalized_funding_rate_in_seconds(funding_info_report, connector_name)
+                    token_info[f"{connector_name} Rate (%)"] = (
+                        rate * self.funding_profitability_interval * 100 if rate is not None else None
+                    )
 
                 # Skip if no profitable combination found
                 if best_combination is None:

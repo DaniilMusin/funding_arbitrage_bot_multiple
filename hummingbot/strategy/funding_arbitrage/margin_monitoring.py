@@ -461,13 +461,8 @@ class MarginMonitor:
     async def _handle_warning_margin(self, account_key: str, margin_info: MarginInfo):
         """Handle margin warning situations."""
         logger.warning(f"Margin warning for {account_key}: ratio={margin_info.margin_ratio}")
-
-        # Trigger warning actions
-        for callback in self.action_callbacks[MarginAction.REDUCE_LEVERAGE]:
-            try:
-                await callback(account_key, margin_info)
-            except Exception as e:
-                logger.error(f"Error in reduce leverage callback: {e}")
+        # Account-level warnings do not identify a specific position to reduce.
+        # Position-level reductions are handled in _check_auto_leverage_reduction.
 
     async def _check_auto_leverage_reduction(self):
         """Check all positions for automatic leverage reduction."""
