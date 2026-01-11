@@ -1637,6 +1637,9 @@ class FundingRateArbitrage(StrategyV2Base):
         accrued = info.get("demo_accrued_funding_pnl")
         if accrued is None:
             accrued = Decimal("0")
+        else:
+            accrued = Decimal(str(accrued))
+        info["demo_accrued_funding_pnl"] = accrued
         last_ts = info.get("demo_last_funding_ts")
         if last_ts is None:
             info["demo_last_funding_ts"] = self.current_timestamp
@@ -1648,14 +1651,10 @@ class FundingRateArbitrage(StrategyV2Base):
             return accrued
 
         if rate_connector_1 is None or rate_connector_2 is None:
-            info["demo_last_funding_ts"] = self.current_timestamp
-            info["demo_accrued_funding_pnl"] = accrued
             return accrued
 
         position_size = info.get("position_size_quote")
         if position_size is None or position_size <= 0:
-            info["demo_last_funding_ts"] = self.current_timestamp
-            info["demo_accrued_funding_pnl"] = accrued
             return accrued
 
         if info["side"] == TradeType.BUY:
