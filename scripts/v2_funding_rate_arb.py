@@ -1,3 +1,4 @@
+import csv
 import os
 from itertools import islice
 from decimal import Decimal
@@ -172,6 +173,30 @@ class FundingRateArbitrageConfig(StrategyV2ConfigBase):
             "prompt": lambda mi: "Enter demo close delay in seconds (e.g. 2): ",
             "prompt_on_new": False}
     )
+    demo_run_id: str = Field(
+        default="",
+        json_schema_extra={
+            "prompt": lambda mi: "Enter demo run id (optional): ",
+            "prompt_on_new": False}
+    )
+    demo_metrics_enabled: bool = Field(
+        default=False,
+        json_schema_extra={
+            "prompt": lambda mi: "Enable demo metrics logging (True/False): ",
+            "prompt_on_new": False}
+    )
+    demo_metrics_file: str = Field(
+        default="",
+        json_schema_extra={
+            "prompt": lambda mi: "Enter demo metrics file path (optional): ",
+            "prompt_on_new": False}
+    )
+    demo_metrics_interval_seconds: int = Field(
+        default=60,
+        json_schema_extra={
+            "prompt": lambda mi: "Enter demo metrics logging interval in seconds (e.g. 60): ",
+            "prompt_on_new": False}
+    )
 
     @field_validator("connectors", "tokens", mode="before")
     @classmethod
@@ -256,6 +281,22 @@ class FundingRateArbitrage(StrategyV2Base):
         # Track positions that are closing and require confirmation
         self.closing_funding_arbitrages = {}
 
+        # Demo metrics tracking
+        self.demo_metrics_enabled = bool(self.config.demo_mode and self.config.demo_metrics_enabled)
+        self.demo_run_id = self._sanitize_run_id(self.config.demo_run_id)
+        if not self.demo_run_id:
+            self.demo_run_id = "demo"
+        if self.config.demo_metrics_file:
+            self.demo_metrics_file = self.config.demo_metrics_file
+        else:
+            self.demo_metrics_file = os.path.join("logs", f"demo_metrics_{self.demo_run_id}.csv")
+        self.demo_metrics_interval_seconds = max(1, self.config.demo_metrics_interval_seconds)
+        self.demo_start_balance = Decimal(str(self.config.demo_account_balance_quote)) if self.config.demo_mode else Decimal("0")
+        self.demo_realized_pnl = Decimal("0")
+        self.demo_max_equity = None
+        self.demo_max_drawdown = Decimal("0")
+        self.demo_last_metrics_ts = None
+
     def start(self, clock: Clock, timestamp: float) -> None:
         """
         Start the strategy.
@@ -308,6 +349,10 @@ class FundingRateArbitrage(StrategyV2Base):
             self.logger().info(f"   - Demo balance (quote): ${self.config.demo_account_balance_quote}")
             self.logger().info(f"   - Demo fill delay: {self.config.demo_fill_delay_seconds}s")
             self.logger().info(f"   - Demo close delay: {self.config.demo_close_delay_seconds}s")
+            if self.demo_metrics_enabled:
+                self.logger().info(f"   - Demo run id: {self.demo_run_id}")
+                self.logger().info(f"   - Demo metrics file: {self.demo_metrics_file}")
+                self.logger().info(f"   - Demo metrics interval: {self.demo_metrics_interval_seconds}s")
         self.logger().info("=" * 80)
 
         self.apply_initial_setting()
@@ -1577,10 +1622,104 @@ class FundingRateArbitrage(StrategyV2Base):
 
             imbalance = abs(notional_1 - notional_2) / max(notional_1, notional_2)
 
-            if imbalance > self.config.max_position_imbalance_pct:
-                return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+        if imbalance > self.config.max_position_imbalance_pct:
+            return False, f"Position imbalance {imbalance:.2%} > {self.config.max_position_imbalance_pct:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
 
-            return True, f"Hedge OK: imbalance {imbalance:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+        return True, f"Hedge OK: imbalance {imbalance:.2%} (Q1: ${notional_1:.2f}, Q2: ${notional_2:.2f})"
+
+    def _sanitize_run_id(self, run_id: str) -> str:
+        if run_id is None:
+            return ""
+        safe = str(run_id).strip()
+        for sep in (os.sep, os.altsep):
+            if sep:
+                safe = safe.replace(sep, "_")
+        return safe
+
+    def _ensure_demo_metrics_dir(self):
+        if not self.demo_metrics_file:
+            return
+        directory = os.path.dirname(self.demo_metrics_file)
+        if directory and not os.path.isdir(directory):
+            os.makedirs(directory, exist_ok=True)
+
+    def _update_demo_metrics(self, unrealized_pnl: Decimal | None = None):
+        if not self.demo_metrics_enabled:
+            return
+        if self.current_timestamp is None:
+            return
+
+        if unrealized_pnl is None:
+            unrealized_pnl = Decimal("0")
+            for token, arb_info in self.active_funding_arbitrages.items():
+                if not arb_info.get("is_demo"):
+                    continue
+                trade_pnl = self._calculate_demo_trade_pnl(token, arb_info)
+                if trade_pnl is None:
+                    trade_pnl = Decimal("0")
+                funding_pnl = arb_info.get("demo_accrued_funding_pnl", Decimal("0"))
+                unrealized_pnl += trade_pnl + Decimal(str(funding_pnl))
+        else:
+            unrealized_pnl = Decimal(str(unrealized_pnl))
+
+        realized_pnl = Decimal(str(self.demo_realized_pnl))
+        equity = self.demo_start_balance + realized_pnl + unrealized_pnl
+        total_pnl = realized_pnl + unrealized_pnl
+
+        if self.demo_max_equity is None or equity > self.demo_max_equity:
+            self.demo_max_equity = equity
+
+        max_equity = self.demo_max_equity or equity
+        drawdown = max_equity - equity
+        if drawdown > self.demo_max_drawdown:
+            self.demo_max_drawdown = drawdown
+
+        if self.demo_last_metrics_ts is not None:
+            if (self.current_timestamp - self.demo_last_metrics_ts) < self.demo_metrics_interval_seconds:
+                return
+
+        self.demo_last_metrics_ts = self.current_timestamp
+
+        max_drawdown_pct = Decimal("0")
+        if max_equity > 0:
+            max_drawdown_pct = (self.demo_max_drawdown / max_equity) * Decimal("100")
+
+        self._ensure_demo_metrics_dir()
+        write_header = not os.path.isfile(self.demo_metrics_file)
+        with open(self.demo_metrics_file, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow([
+                    "timestamp",
+                    "run_id",
+                    "equity",
+                    "realized_pnl",
+                    "unrealized_pnl",
+                    "total_pnl",
+                    "max_equity",
+                    "max_drawdown",
+                    "max_drawdown_pct",
+                    "active_positions",
+                    "pending_positions",
+                    "closing_positions",
+                ])
+            active_demo = sum(1 for info in self.active_funding_arbitrages.values() if info.get("is_demo"))
+            pending_demo = sum(1 for info in self.pending_funding_arbitrages.values() if info.get("is_demo"))
+            closing_demo = sum(1 for info in self.closing_funding_arbitrages.values() if info.get("is_demo"))
+            writer.writerow([
+                int(self.current_timestamp),
+                self.demo_run_id,
+                str(equity),
+                str(realized_pnl),
+                str(unrealized_pnl),
+                str(total_pnl),
+                str(max_equity),
+                str(self.demo_max_drawdown),
+                str(max_drawdown_pct),
+                active_demo,
+                pending_demo,
+                closing_demo,
+            ])
 
     def _calculate_demo_trade_pnl(self, token: str, info: dict) -> Decimal | None:
         connector_1 = info.get("connector_1")
@@ -1732,7 +1871,10 @@ class FundingRateArbitrage(StrategyV2Base):
 
             if closing_info.get("is_demo"):
                 if time_since_close >= self.config.demo_close_delay_seconds:
-                    total_pnl = float(closing_info.get("demo_close_pnl", Decimal("0")))
+                    demo_close_pnl = closing_info.get("demo_close_pnl", Decimal("0"))
+                    demo_close_pnl = Decimal(str(demo_close_pnl))
+                    self.demo_realized_pnl += demo_close_pnl
+                    total_pnl = float(demo_close_pnl)
                     close_reason = closing_info.get("close_reason", "Closed")
                     self.logger().info(f"DEMO position for {token} fully closed. Reason: {close_reason}")
                     self.alerter.alert_position_closed(
@@ -1744,6 +1886,7 @@ class FundingRateArbitrage(StrategyV2Base):
                     if len(self.stopped_funding_arbitrages[token]) > 10:
                         self.stopped_funding_arbitrages[token] = self.stopped_funding_arbitrages[token][-10:]
                     del self.closing_funding_arbitrages[token]
+                    self._update_demo_metrics()
                 continue
 
             executor_ids = closing_info.get("executors_ids", [])
@@ -1839,6 +1982,8 @@ class FundingRateArbitrage(StrategyV2Base):
         stop_executor_actions.extend(closing_stop_actions)
 
         tokens_to_remove = []
+        demo_unrealized_total = Decimal("0")
+        demo_positions_seen = 0
         for token, funding_arbitrage_info in self.active_funding_arbitrages.items():
             connector_1 = funding_arbitrage_info["connector_1"]
             connector_2 = funding_arbitrage_info["connector_2"]
@@ -1932,6 +2077,9 @@ class FundingRateArbitrage(StrategyV2Base):
                 if trade_pnl is None:
                     self.logger().warning(f"DEMO PnL unavailable for {token}: price data missing")
                     trade_pnl = Decimal("0")
+
+                demo_unrealized_total += trade_pnl + funding_payments_pnl
+                demo_positions_seen += 1
 
                 total_pnl = trade_pnl + funding_payments_pnl
                 take_profit_condition = total_pnl > (
@@ -2105,6 +2253,9 @@ class FundingRateArbitrage(StrategyV2Base):
         # Remove stopped arbitrages from active dict
         for token in tokens_to_remove:
             del self.active_funding_arbitrages[token]
+
+        if self.demo_metrics_enabled and (demo_positions_seen > 0 or self.config.demo_mode):
+            self._update_demo_metrics(demo_unrealized_total)
 
         return stop_executor_actions
 
