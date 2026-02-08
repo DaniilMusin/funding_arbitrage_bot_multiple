@@ -4,36 +4,50 @@ Test script for funding rate arbitrage bot
 """
 
 import asyncio
+import os
 import aiohttp
 import time
 from decimal import Decimal
+import pytest
 
 
-async def test_exchanges():
+# Windows: aiohttp/aiodns requires a SelectorEventLoop
+if os.name == "nt" and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+async def check_exchanges():
     """Test basic exchange connectivity"""
     print("=== Testing Exchange Connectivity ===")
     
     exchanges = {
-        "OKX": "https://www.okx.com/api/v5/public/instruments?instType=SWAP",
-        "Bybit": "https://api.bybit.com/v5/market/instruments-info?category=linear", 
-        "BingX": "https://open-api.bingx.com/openApi/spot/v1/common/symbols",
-        "Hyperliquid": "https://api.hyperliquid.xyz/info"
+        "OKX": ("GET", "https://www.okx.com/api/v5/public/instruments?instType=SWAP", None),
+        "Bybit": ("GET", "https://api.bybit.com/v5/market/instruments-info?category=linear", None),
+        "BingX": ("GET", "https://open-api.bingx.com/openApi/spot/v1/common/symbols", None),
+        "Hyperliquid": ("POST", "https://api.hyperliquid.xyz/info", {"type": "meta"}),
     }
     
     async with aiohttp.ClientSession() as session:
-        for name, url in exchanges.items():
+        for name, (method, url, payload) in exchanges.items():
             try:
                 print(f"Testing {name}...")
-                async with session.get(url, timeout=10) as response:
-                    if response.status == 200:
-                        print(f"[OK] {name}: OK (status {response.status})")
-                    else:
-                        print(f"[FAIL] {name}: Failed (status {response.status})")
+                if method == "POST":
+                    async with session.post(url, json=payload, timeout=10) as response:
+                        if response.status == 200:
+                            print(f"[OK] {name}: OK (status {response.status})")
+                        else:
+                            print(f"[FAIL] {name}: Failed (status {response.status})")
+                else:
+                    async with session.get(url, timeout=10) as response:
+                        if response.status == 200:
+                            print(f"[OK] {name}: OK (status {response.status})")
+                        else:
+                            print(f"[FAIL] {name}: Failed (status {response.status})")
             except Exception as e:
                 print(f"[ERROR] {name}: Error - {str(e)}")
 
 
-async def test_config_loading():
+async def check_config_loading():
     """Test configuration loading"""
     print("\n=== Testing Configuration Loading ===")
     
@@ -58,7 +72,7 @@ async def test_config_loading():
         print(f"[ERROR] Config loading failed: {str(e)}")
 
 
-async def test_funding_rates():
+async def check_funding_rates():
     """Test funding rate fetching"""
     print("\n=== Testing Funding Rate Fetching ===")
     
@@ -121,14 +135,29 @@ def calculate_arbitrage_example():
         print(f"[FAIL] No arbitrage opportunity (diff {float(rate_diff)*100:.2f}% < min {float(min_profitability)*100:.2f}%)")
 
 
+def test_exchanges():
+    """This file is an integration script, not a pytest unit suite."""
+    pytest.skip("Run integration checks via: python test_funding_arb.py")
+
+
+def test_config_loading():
+    """This file is an integration script, not a pytest unit suite."""
+    pytest.skip("Run integration checks via: python test_funding_arb.py")
+
+
+def test_funding_rates():
+    """This file is an integration script, not a pytest unit suite."""
+    pytest.skip("Run integration checks via: python test_funding_arb.py")
+
+
 async def main():
     """Run all tests"""
     print("Funding Rate Arbitrage Bot - Test Suite")
     print("=" * 50)
     
-    await test_exchanges()
-    await test_config_loading()
-    await test_funding_rates()
+    await check_exchanges()
+    await check_config_loading()
+    await check_funding_rates()
     calculate_arbitrage_example()
     
     print("\n" + "=" * 50)
